@@ -14,7 +14,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 #[Fillable([
     'code', 'member_type', 'last_name', 'first_name', 'middle_name', 'address',
     'birthdate', 'civil_status', 'apply_date', 'deduction_start_date', 'ghp_amount',
-    'remarks', 'division_id', 'department_id', 'old_code',
+    'remarks', 'division_id', 'department_id', 'old_code', 'is_active',
 ])]
 class Member extends Model
 {
@@ -35,6 +35,7 @@ class Member extends Model
             'apply_date' => 'date',
             'deduction_start_date' => 'date',
             'ghp_amount' => 'decimal:2',
+            'is_active' => 'boolean',
         ];
     }
 
@@ -81,6 +82,16 @@ class Member extends Model
     public function scopeAgents(Builder $query): Builder
     {
         return $query->where('member_type', self::MEMBER_TYPE_AGENT);
+    }
+
+    public function scopeActive(Builder $query): Builder
+    {
+        return $query->where('is_active', true);
+    }
+
+    public function scopeInactive(Builder $query): Builder
+    {
+        return $query->where('is_active', false);
     }
 
     /**
