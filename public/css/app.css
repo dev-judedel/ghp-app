@@ -271,6 +271,66 @@ td.checkbox-col, th.checkbox-col { width: 36px; }
 
 .pagination { margin-top: 16px; font-size: 13px; }
 
+/* ---------- Filter modal ---------- */
+
+.filter-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+.filter-badge {
+    background: var(--accent);
+    color: #fff;
+    border-radius: 100px;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 1px 7px;
+    line-height: 1.5;
+}
+
+dialog.modal {
+    border: none;
+    border-radius: 10px;
+    padding: 0;
+    box-shadow: var(--shadow-md);
+    width: 100%;
+    max-width: 420px;
+}
+dialog.modal::backdrop {
+    background: rgba(10, 30, 25, 0.45);
+}
+.modal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+}
+.modal-head h2 { font-size: 16px; }
+.modal-close {
+    background: none; border: none; cursor: pointer;
+    font-size: 20px; line-height: 1; color: var(--ink-muted); padding: 2px 6px;
+}
+.modal-close:hover { color: var(--ink); }
+.modal-body { padding: 18px 20px; }
+.modal-foot {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 20px;
+    border-top: 1px solid var(--border);
+    background: var(--bg);
+    border-radius: 0 0 10px 10px;
+}
+
+.radio-group { display: flex; flex-direction: column; gap: 8px; }
+.radio-group label {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 14px; font-weight: 400; color: var(--ink);
+    cursor: pointer;
+}
+.radio-group input { accent-color: var(--primary); width: 15px; height: 15px; }
+
 @media (prefers-reduced-motion: reduce) {
     * { transition: none !important; animation: none !important; }
 }

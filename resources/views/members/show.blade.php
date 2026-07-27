@@ -2,6 +2,10 @@
 
 @section('title', 'Member')
 
+@php
+    $hasReimbursementErrors = $errors->any() && $errors->has('or_amount');
+@endphp
+
 @section('content')
     <div style="margin-bottom: 16px;">
         <a href="{{ route('members.index') }}">&larr; Back to members</a>
@@ -15,6 +19,9 @@
             </div>
             <span class="badge {{ $member->member_type === \App\Models\Member::MEMBER_TYPE_AGENT ? 'badge-agent' : 'badge-employee' }}">
                 {{ $member->member_type === \App\Models\Member::MEMBER_TYPE_AGENT ? 'Agent' : 'Employee' }}
+            </span>
+            <span class="badge {{ $member->is_active ? 'badge-ok' : 'badge-warn' }}" style="margin-left: 6px;">
+                {{ $member->is_active ? 'Active' : 'Inactive' }}
             </span>
         </div>
 
@@ -54,6 +61,12 @@
                 <span class="eyebrow">Current coverage year</span>
                 <h2>Benefit balance</h2>
             </div>
+            @if (auth()->user()->isAdmin())
+                <form method="POST" action="{{ route('members.generate-benefit-period', $member) }}" onsubmit="return confirm('Generate/update this year\'s benefit period for {{ $member->code }}?');">
+                    @csrf
+                    <button type="submit" class="btn btn-primary">Generate this year's benefit period</button>
+                </form>
+            @endif
         </div>
 
         @if ($currentBenefitPeriod)
@@ -152,6 +165,9 @@
                 <span class="eyebrow">Most recent 20</span>
                 <h2>Reimbursements</h2>
             </div>
+            @if (auth()->user()->isAdmin())
+                <button type="button" class="btn btn-primary" onclick="fileReimbursementModal.showModal()">+ File reimbursement</button>
+            @endif
         </div>
 
         @if ($member->reimbursements->isEmpty())
@@ -199,5 +215,80 @@
                 </tbody>
             </table>
         </div>
+    @endif
+
+    {{-- File reimbursement modal --}}
+    @if (auth()->user()->isAdmin())
+        <dialog id="fileReimbursementModal" class="modal">
+            <form method="POST" action="{{ route('members.reimbursements.store', $member) }}">
+                @csrf
+
+                <div class="modal-head">
+                    <h2>File reimbursement</h2>
+                    <button type="button" class="modal-close" onclick="fileReimbursementModal.close()" aria-label="Close">&times;</button>
+                </div>
+
+                <div class="modal-body">
+                    @if ($hasReimbursementErrors)
+                        <div class="field">
+                            <p class="error" style="font-weight: 600;">Please fix the following:</p>
+                            <ul style="margin: 4px 0 0; padding-left: 18px; color: var(--danger); font-size: 13px;">
+                                @foreach ($errors->all() as $error)
+                                    <li>{{ $error }}</li>
+                                @endforeach
+                            </ul>
+                        </div>
+                    @endif
+
+                    <div class="ledger-strip" style="margin-bottom: 14px;">
+                        <div class="ledger-row total">
+                            <span class="label">Available balance</span>
+                            <span class="amount ledger">&#8369;{{ number_format($currentBenefitPeriod->ghp_available ?? 0, 2) }}</span>
+                        </div>
+                    </div>
+
+                    <div style="display: flex; gap: 12px;">
+                        <div class="field" style="flex: 1;">
+                            <label for="or_no">OR number</label>
+                            <input type="text" id="or_no" name="or_no" value="{{ old('or_no') }}">
+                        </div>
+                        <div class="field" style="flex: 1;">
+                            <label for="or_date">OR date</label>
+                            <input type="date" id="or_date" name="or_date" value="{{ old('or_date', now()->toDateString()) }}" required>
+                        </div>
+                    </div>
+
+                    <div class="field">
+                        <label for="or_amount">Amount</label>
+                        <input type="number" id="or_amount" name="or_amount" value="{{ old('or_amount') }}" step="0.01" min="0.01" required>
+                        <p class="hint">Amounts above the available balance are still recorded in full — see the note after submitting.</p>
+                    </div>
+
+                    <div class="field">
+                        <label for="hospital_name">Hospital / clinic</label>
+                        <input type="text" id="hospital_name" name="hospital_name" value="{{ old('hospital_name') }}">
+                    </div>
+
+                    <div class="field">
+                        <label for="description">Description</label>
+                        <input type="text" id="description" name="description" value="{{ old('description') }}">
+                    </div>
+
+                    <div class="field" style="margin-bottom: 0;">
+                        <label for="remarks">Remarks</label>
+                        <textarea id="remarks" name="remarks" rows="2">{{ old('remarks') }}</textarea>
+                    </div>
+                </div>
+
+                <div class="modal-foot">
+                    <button type="button" class="btn btn-ghost" onclick="fileReimbursementModal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Record reimbursement</button>
+                </div>
+            </form>
+        </dialog>
+
+        @if ($hasReimbursementErrors)
+            <script>fileReimbursementModal.showModal();</script>
+        @endif
     @endif
 @endsection

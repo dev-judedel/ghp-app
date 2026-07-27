@@ -30,6 +30,12 @@ use Carbon\CarbonInterface;
  *     if that prior year was entirely unused (used_amount == 0)
  *   - ghp_amount itself: 3600 base, 4200 if the member has at least one
  *     GHP-eligible dependent (see Dependent::isEligible)
+ *   - "Used" is capped at the available fund balance: a reimbursement can
+ *     be filed for more than the member has left (the receipt/OR amount is
+ *     always recorded in full, unmodified, on the Reimbursement row itself
+ *     — that's the audit trail), but the benefit period's ghp_used/
+ *     ghp_available never reflect more than what the fund actually had.
+ *     The uncapped total is available via calculate()['claimed'] if needed.
  *
  * What was reinterpreted (flagged, needs business-owner confirmation):
  *   - The "day >= 15" cutoff is applied PER MONTH here: a month counts
@@ -170,14 +176,25 @@ class BenefitAccrualService
             ->whereBetween('or_date', [$from, $to])
             ->sum('or_amount');
 
-        $available = max(round($accrued + $carryForward - $used, 2), 0.0);
+        $fundBalance = $accrued + $carryForward;
+
+        // The full claimed amount on each reimbursement is always kept as-is
+        // (that's the actual receipt/OR value — audit trail, not adjustable
+        // here). But what counts as "used" against the fund is capped at
+        // whatever was actually available, so a claim that exceeds the
+        // remaining balance still gets recorded in full on the
+        // reimbursement itself, while the fund's available balance floors
+        // at 0 instead of going negative.
+        $cappedUsed = min($used, $fundBalance);
+        $available = max(round($fundBalance - $cappedUsed, 2), 0.0);
 
         return [
             'ghp_amount' => $ghpAmount,
             'months_accrued' => $monthsAccrued,
             'accrued' => $accrued,
             'carry_forward' => round($carryForward, 2),
-            'used' => round($used, 2),
+            'used' => round($cappedUsed, 2),
+            'claimed' => round($used, 2),
             'available' => $available,
             'from' => $from,
             'to' => $to,

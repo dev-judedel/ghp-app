@@ -6,24 +6,28 @@
     <div class="card">
         <div class="card-head">
             <div>
-                <span class="eyebrow">Overview</span>
+                <span class="eyebrow">Overview &middot; active members</span>
                 <h2>Fund summary</h2>
             </div>
         </div>
         <div class="ledger-strip">
-            <div class="ledger-row">
+            <div class="ledger-row total">
                 <span class="label">Active members</span>
-                <span class="amount ledger">{{ number_format($memberCount) }}</span>
+                <span class="amount ledger">{{ number_format($activeMemberCount) }}</span>
             </div>
             <div class="ledger-row">
-                <span class="label">Employees</span>
+                <span class="label">Active employees</span>
                 <span class="amount ledger">{{ number_format($employeeCount) }}</span>
             </div>
             <div class="ledger-row">
-                <span class="label">Agents</span>
+                <span class="label">Active agents</span>
                 <span class="amount ledger">{{ number_format($agentCount) }}</span>
             </div>
-            <div class="ledger-row total">
+            <div class="ledger-row">
+                <span class="label">Inactive members (hidden from list by default)</span>
+                <span class="amount ledger">{{ number_format($inactiveMemberCount) }}</span>
+            </div>
+            <div class="ledger-row">
                 <span class="label">Reimbursements filed (all time)</span>
                 <span class="amount ledger">{{ number_format($reimbursementCount) }}</span>
             </div>

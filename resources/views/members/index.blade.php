@@ -2,6 +2,13 @@
 
 @section('title', 'Members')
 
+@php
+    // 'active' is the implicit default (see MemberController::index), so it
+    // shouldn't count as a "filter applied" badge — only deviations from it do.
+    $activeFilterCount = collect([$type, $departmentId, $divisionId, $status !== 'active' ? $status : null])->filter()->count();
+    $hasMemberCreationErrors = $errors->any() && $errors->has('code');
+@endphp
+
 @section('content')
     <div class="card">
         <form method="GET" action="{{ route('members.index') }}" style="display: flex; gap: 10px; align-items: flex-end;">
@@ -9,116 +16,234 @@
                 <label for="search">Search</label>
                 <input type="text" id="search" name="search" value="{{ $search }}" placeholder="Name or member code&hellip;">
             </div>
-            <div class="field" style="width: 180px; margin-bottom: 0;">
-                <label for="type">Type</label>
-                <select id="type" name="type">
-                    <option value="" @selected(!$type)>All members</option>
-                    <option value="employee" @selected($type === 'employee')>Employees</option>
-                    <option value="agent" @selected($type === 'agent')>Agents</option>
-                </select>
-            </div>
+
+            {{-- Filters other than search are applied via the modal, but must still be
+                 submitted with the search form so a plain "Search" click doesn't drop them. --}}
+            <input type="hidden" name="type" value="{{ $type }}">
+            <input type="hidden" name="department" value="{{ $departmentId }}">
+            <input type="hidden" name="division" value="{{ $divisionId }}">
+            <input type="hidden" name="status" value="{{ $status }}">
+
             <button type="submit" class="btn btn-primary">Search</button>
-            @if ($search || $type)
-                <a href="{{ route('members.index') }}" class="btn btn-ghost">Clear</a>
+
+            <button type="button" class="btn btn-ghost filter-trigger" onclick="filterModal.showModal()">
+                Filters
+                @if ($activeFilterCount > 0)
+                    <span class="filter-badge">{{ $activeFilterCount }}</span>
+                @endif
+            </button>
+
+            @if ($search || $activeFilterCount > 0)
+                <a href="{{ route('members.index') }}" class="btn btn-ghost">Clear all</a>
+            @endif
+
+            @if (auth()->user()->isAdmin())
+                <button type="button" class="btn btn-primary" style="margin-left: auto;" onclick="addMemberModal.showModal()">+ Add member</button>
             @endif
         </form>
     </div>
 
-    <div class="card">
-        @if ($members->isEmpty())
-            <div class="empty-state">
-                <h3>No members found</h3>
-                <p>Try a different name, code, or clear your filters.</p>
-            </div>
-        @else
-            @if (auth()->user()->isAdmin())
-                <form id="bulk-form" method="POST" action="{{ route('members.bulk-action') }}">
-                    @csrf
-                    <input type="hidden" name="search" value="{{ $search }}">
-                    <input type="hidden" name="type" value="{{ $type }}">
-                    <input type="hidden" name="bulk_action" id="bulk_action" value="">
+    {{-- Filter modal --}}
+    <dialog id="filterModal" class="modal">
+        <form method="GET" action="{{ route('members.index') }}">
+            <input type="hidden" name="search" value="{{ $search }}">
 
-                    <div class="bulk-bar">
-                        <span class="count"><span id="selected-count">0</span> selected</span>
-                        <button type="button" class="btn btn-ghost" onclick="submitBulk('activate')">Mark Active</button>
-                        <button type="button" class="btn btn-ghost" onclick="submitBulk('deactivate')">Mark Inactive</button>
-                        <button type="button" class="btn btn-primary" onclick="submitBulk('generate_benefit_period')">Generate this year's benefit period</button>
+            <div class="modal-head">
+                <h2>Filter members</h2>
+                <button type="button" class="modal-close" onclick="filterModal.close()" aria-label="Close">&times;</button>
+            </div>
+
+            <div class="modal-body">
+                <div class="field">
+                    <label>Type</label>
+                    <div class="radio-group">
+                        <label><input type="radio" name="type" value="" @checked(!$type)> All members</label>
+                        <label><input type="radio" name="type" value="employee" @checked($type === 'employee')> Employees</label>
+                        <label><input type="radio" name="type" value="agent" @checked($type === 'agent')> Agents</label>
+                    </div>
+                </div>
+
+                <div class="field">
+                    <label for="modal-department">Department</label>
+                    <select id="modal-department" name="department">
+                        <option value="">All departments</option>
+                        @foreach ($departments as $department)
+                            <option value="{{ $department->id }}" @selected((string) $departmentId === (string) $department->id)>
+                                {{ $department->name }}
+                            </option>
+                        @endforeach
+                    </select>
+                </div>
+
+                <div class="field">
+                    <label for="modal-division">Division</label>
+                    <select id="modal-division" name="division">
+                        <option value="">All divisions</option>
+                        @foreach ($divisions as $division)
+                            <option value="{{ $division->id }}" @selected((string) $divisionId === (string) $division->id)>
+                                {{ $division->name }} ({{ $division->member_type === \App\Models\Member::MEMBER_TYPE_AGENT ? 'Agent' : 'Employee' }})
+                            </option>
+                        @endforeach
+                    </select>
+                </div>
+
+                <div class="field" style="margin-bottom: 0;">
+                    <label>Status</label>
+                    <div class="radio-group">
+                        <label><input type="radio" name="status" value="active" @checked($status === 'active')> Active only <span style="color: var(--ink-muted);">(default)</span></label>
+                        <label><input type="radio" name="status" value="inactive" @checked($status === 'inactive')> Inactive only</label>
+                        <label><input type="radio" name="status" value="all" @checked($status === 'all')> All (active + inactive)</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="modal-foot">
+                <a href="{{ route('members.index', ['search' => $search]) }}" class="btn btn-ghost">Reset filters</a>
+                <button type="submit" class="btn btn-primary">Apply filters</button>
+            </div>
+        </form>
+    </dialog>
+
+    {{-- Add member modal --}}
+    @if (auth()->user()->isAdmin())
+        <dialog id="addMemberModal" class="modal" style="max-width: 640px;">
+            <form method="POST" action="{{ route('members.store') }}">
+                @csrf
+
+                <div class="modal-head">
+                    <h2>Add member</h2>
+                    <button type="button" class="modal-close" onclick="addMemberModal.close()" aria-label="Close">&times;</button>
+                </div>
+
+                <div class="modal-body" style="max-height: 70vh; overflow-y: auto;">
+                    @if ($hasMemberCreationErrors)
+                        <div class="field">
+                            <p class="error" style="font-weight: 600;">Please fix the following:</p>
+                            <ul style="margin: 4px 0 0; padding-left: 18px; color: var(--danger); font-size: 13px;">
+                                @foreach ($errors->all() as $error)
+                                    <li>{{ $error }}</li>
+                                @endforeach
+                            </ul>
+                        </div>
+                    @endif
+
+                    <h3 style="margin-bottom: 10px;">Identity</h3>
+                    <div style="display: flex; gap: 12px;">
+                        <div class="field" style="flex: 1;">
+                            <label for="code">Member code</label>
+                            <input type="text" id="code" name="code" value="{{ old('code') }}" required>
+                        </div>
+                        <div class="field" style="flex: 1;">
+                            <label for="old_code">Old code (optional)</label>
+                            <input type="text" id="old_code" name="old_code" value="{{ old('old_code') }}">
+                        </div>
                     </div>
 
-                    <table>
-                        <thead>
-                            <tr>
-                                <th class="checkbox-col"><input type="checkbox" id="select-all" onclick="toggleAll(this)"></th>
-                                <th>Code</th>
-                                <th>Name</th>
-                                <th>Type</th>
-                                <th>Division</th>
-                                <th>Department</th>
-                                <th>Status</th>
-                                <th class="num">GHP amount</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            @foreach ($members as $member)
-                                <tr onclick="window.location='{{ route('members.show', $member) }}'" style="cursor: pointer;">
-                                    <td class="checkbox-col" onclick="event.stopPropagation()">
-                                        <input type="checkbox" name="member_ids[]" value="{{ $member->id }}" class="member-checkbox" onchange="updateSelectedCount()">
-                                    </td>
-                                    <td class="code">{{ $member->code }}</td>
-                                    <td><a href="{{ route('members.show', $member) }}">{{ $member->full_name }}</a></td>
-                                    <td>
-                                        <span class="badge {{ $member->member_type === \App\Models\Member::MEMBER_TYPE_AGENT ? 'badge-agent' : 'badge-employee' }}">
-                                            {{ $member->member_type === \App\Models\Member::MEMBER_TYPE_AGENT ? 'Agent' : 'Employee' }}
-                                        </span>
-                                    </td>
-                                    <td>{{ $member->division->name ?? '—' }}</td>
-                                    <td>{{ $member->department->name ?? '—' }}</td>
-                                    <td>
-                                        <span class="badge {{ $member->is_active ? 'badge-ok' : 'badge-warn' }}">
-                                            {{ $member->is_active ? 'Active' : 'Inactive' }}
-                                        </span>
-                                    </td>
-                                    <td class="num amount">&#8369;{{ number_format($member->ghp_amount, 2) }}</td>
-                                </tr>
-                            @endforeach
-                        </tbody>
-                    </table>
-                </form>
-            @else
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Code</th>
-                            <th>Name</th>
-                            <th>Type</th>
-                            <th>Division</th>
-                            <th>Department</th>
-                            <th class="num">GHP amount</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        @foreach ($members as $member)
-                            <tr onclick="window.location='{{ route('members.show', $member) }}'" style="cursor: pointer;">
-                                <td class="code">{{ $member->code }}</td>
-                                <td><a href="{{ route('members.show', $member) }}">{{ $member->full_name }}</a></td>
-                                <td>
-                                    <span class="badge {{ $member->member_type === \App\Models\Member::MEMBER_TYPE_AGENT ? 'badge-agent' : 'badge-employee' }}">
-                                        {{ $member->member_type === \App\Models\Member::MEMBER_TYPE_AGENT ? 'Agent' : 'Employee' }}
-                                    </span>
-                                </td>
-                                <td>{{ $member->division->name ?? '—' }}</td>
-                                <td>{{ $member->department->name ?? '—' }}</td>
-                                <td class="num amount">&#8369;{{ number_format($member->ghp_amount, 2) }}</td>
-                            </tr>
-                        @endforeach
-                    </tbody>
-                </table>
-            @endif
+                    <div class="field">
+                        <label>Member type</label>
+                        <div class="radio-group" style="flex-direction: row; gap: 20px;">
+                            <label><input type="radio" name="member_type" value="0" @checked(old('member_type', '0') == '0')> Employee</label>
+                            <label><input type="radio" name="member_type" value="1" @checked(old('member_type') == '1')> Agent</label>
+                        </div>
+                    </div>
 
-            <div class="pagination">
-                {{ $members->links() }}
-            </div>
-        @endif
+                    <div style="display: flex; gap: 12px;">
+                        <div class="field" style="flex: 1;">
+                            <label for="last_name">Last name</label>
+                            <input type="text" id="last_name" name="last_name" value="{{ old('last_name') }}" required>
+                        </div>
+                        <div class="field" style="flex: 1;">
+                            <label for="first_name">First name</label>
+                            <input type="text" id="first_name" name="first_name" value="{{ old('first_name') }}" required>
+                        </div>
+                        <div class="field" style="flex: 1;">
+                            <label for="middle_name">Middle name</label>
+                            <input type="text" id="middle_name" name="middle_name" value="{{ old('middle_name') }}">
+                        </div>
+                    </div>
+
+                    <div class="field">
+                        <label for="address">Address</label>
+                        <input type="text" id="address" name="address" value="{{ old('address') }}">
+                    </div>
+
+                    <div style="display: flex; gap: 12px;">
+                        <div class="field" style="flex: 1;">
+                            <label for="birthdate">Birthdate</label>
+                            <input type="date" id="birthdate" name="birthdate" value="{{ old('birthdate') }}">
+                        </div>
+                        <div class="field" style="flex: 1;">
+                            <label>Civil status</label>
+                            <div class="radio-group" style="flex-direction: row; gap: 20px; padding-top: 9px;">
+                                <label><input type="radio" name="civil_status" value="0" @checked(old('civil_status', '0') == '0')> Single</label>
+                                <label><input type="radio" name="civil_status" value="1" @checked(old('civil_status') == '1')> Married</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <h3 style="margin: 18px 0 10px;">Assignment</h3>
+                    <div style="display: flex; gap: 12px;">
+                        <div class="field" style="flex: 1;">
+                            <label for="division_id">Division</label>
+                            <select id="division_id" name="division_id">
+                                <option value="">— None —</option>
+                                @foreach ($divisions as $division)
+                                    <option value="{{ $division->id }}" @selected(old('division_id') == $division->id)>
+                                        {{ $division->name }} ({{ $division->member_type === \App\Models\Member::MEMBER_TYPE_AGENT ? 'Agent' : 'Employee' }})
+                                    </option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div class="field" style="flex: 1;">
+                            <label for="department_id">Department</label>
+                            <select id="department_id" name="department_id">
+                                <option value="">— None —</option>
+                                @foreach ($departments as $department)
+                                    <option value="{{ $department->id }}" @selected(old('department_id') == $department->id)>
+                                        {{ $department->name }}
+                                    </option>
+                                @endforeach
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="field">
+                        <label><input type="checkbox" name="is_active" value="1" @checked(old('is_active', true)) style="width: auto; margin-right: 6px;"> Active</label>
+                    </div>
+
+                    <h3 style="margin: 18px 0 10px;">Benefit setup</h3>
+                    <div style="display: flex; gap: 12px;">
+                        <div class="field" style="flex: 1;">
+                            <label for="apply_date">Apply date</label>
+                            <input type="date" id="apply_date" name="apply_date" value="{{ old('apply_date') }}">
+                        </div>
+                        <div class="field" style="flex: 1;">
+                            <label for="deduction_start_date">Deduction start</label>
+                            <input type="date" id="deduction_start_date" name="deduction_start_date" value="{{ old('deduction_start_date') }}">
+                        </div>
+                        <div class="field" style="flex: 1;">
+                            <label for="ghp_amount">GHP amount</label>
+                            <input type="number" id="ghp_amount" name="ghp_amount" value="{{ old('ghp_amount', 3600) }}" step="0.01" min="0" required>
+                        </div>
+                    </div>
+                    <p class="hint" style="margin-top: -8px; margin-bottom: 12px;">Deduction start date is required before a benefit period can be generated. Base amount is ₱3,600; ₱4,200 if the member has an eligible dependent (add dependents after saving).</p>
+
+                    <div class="field" style="margin-bottom: 0;">
+                        <label for="remarks">Remarks</label>
+                        <textarea id="remarks" name="remarks" rows="2">{{ old('remarks') }}</textarea>
+                    </div>
+                </div>
+
+                <div class="modal-foot">
+                    <button type="button" class="btn btn-ghost" onclick="addMemberModal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save member</button>
+                </div>
+            </form>
+        </dialog>
+    @endif
+
+    <div class="card" id="members-results">
+        @include('members._results')
     </div>
 
     @if (auth()->user()->isAdmin())
@@ -154,6 +279,61 @@
                 document.getElementById('bulk_action').value = action;
                 document.getElementById('bulk-form').submit();
             }
+
+            @if ($hasMemberCreationErrors)
+                addMemberModal.showModal();
+            @endif
         </script>
     @endif
+
+    <script>
+        // ---- Live search: results update as you type, no page reload ----
+        // Available to everyone (admin or not) since browsing/searching members
+        // isn't an admin-only action — only Add/Edit/bulk actions are.
+        const searchInput = document.getElementById('search');
+        const resultsContainer = document.getElementById('members-results');
+        let searchDebounce = null;
+
+        function currentFilterParams() {
+            const params = new URLSearchParams();
+            params.set('search', searchInput.value);
+            @if ($type) params.set('type', @json($type)); @endif
+            @if ($departmentId) params.set('department', @json($departmentId)); @endif
+            @if ($divisionId) params.set('division', @json($divisionId)); @endif
+            params.set('status', @json($status));
+            return params;
+        }
+
+        async function liveSearch() {
+            const params = currentFilterParams();
+            const url = '{{ route('members.index') }}?' + params.toString();
+
+            const response = await fetch(url, {
+                headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            });
+
+            if (! response.ok) {
+                return;
+            }
+
+            resultsContainer.innerHTML = await response.text();
+            window.history.replaceState({}, '', url);
+        }
+
+        if (searchInput) {
+            searchInput.addEventListener('input', () => {
+                clearTimeout(searchDebounce);
+                searchDebounce = setTimeout(liveSearch, 300);
+            });
+
+            // Enter still works instantly instead of waiting for the debounce.
+            searchInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    clearTimeout(searchDebounce);
+                    liveSearch();
+                }
+            });
+        }
+    </script>
 @endsection
