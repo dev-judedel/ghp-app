@@ -1,10 +1,15 @@
 <?php
 
 use App\Http\Controllers\Admin\MemberBulkActionController;
+use App\Http\Controllers\ActivityLogController;
+use App\Http\Controllers\AmountAdjustmentController;
 use App\Http\Controllers\Auth\AuthenticatedSessionController;
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\DependentController;
 use App\Http\Controllers\MemberController;
 use App\Http\Controllers\ReimbursementController;
+use App\Http\Controllers\ReportController;
+use App\Http\Controllers\UserController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', function () {
@@ -23,11 +28,34 @@ Route::middleware('auth')->group(function () {
 
     Route::get('/members', [MemberController::class, 'index'])->name('members.index');
 
+    Route::get('/reports', [ReportController::class, 'index'])->name('reports.index');
+    Route::get('/reports/annual-ghp', [ReportController::class, 'annualGhp'])->name('reports.annual-ghp');
+    Route::get('/reports/reimbursements', [ReportController::class, 'reimbursements'])->name('reports.reimbursements');
+    Route::get('/members/{member}/mdr', [ReportController::class, 'memberDataRecord'])->name('members.mdr');
+
     Route::middleware('admin')->group(function () {
         Route::post('/members/bulk-action', [MemberBulkActionController::class, 'store'])->name('members.bulk-action');
         Route::post('/members', [MemberController::class, 'store'])->name('members.store');
+        Route::put('/members/{member}', [MemberController::class, 'update'])->name('members.update');
         Route::post('/members/{member}/generate-benefit-period', [MemberController::class, 'generateBenefitPeriod'])->name('members.generate-benefit-period');
         Route::post('/members/{member}/reimbursements', [ReimbursementController::class, 'store'])->name('members.reimbursements.store');
+        Route::put('/members/{member}/reimbursements/{reimbursement}', [ReimbursementController::class, 'update'])->name('members.reimbursements.update');
+        Route::post('/members/{member}/reimbursements/{reimbursement}/void', [ReimbursementController::class, 'void'])->name('members.reimbursements.void');
+        Route::post('/members/{member}/reimbursements/{reimbursement}/unvoid', [ReimbursementController::class, 'unvoid'])->name('members.reimbursements.unvoid');
+
+        Route::post('/members/{member}/dependents', [DependentController::class, 'store'])->name('members.dependents.store');
+        Route::put('/members/{member}/dependents/{dependent}', [DependentController::class, 'update'])->name('members.dependents.update');
+        Route::delete('/members/{member}/dependents/{dependent}', [DependentController::class, 'destroy'])->name('members.dependents.destroy');
+
+        Route::post('/members/{member}/amount-adjustments', [AmountAdjustmentController::class, 'store'])->name('members.amount-adjustments.store');
+        Route::post('/members/{member}/amount-adjustments/revert-to-automatic', [AmountAdjustmentController::class, 'revertToAutomatic'])->name('members.amount-adjustments.revert-to-automatic');
+
+        Route::get('/users', [UserController::class, 'index'])->name('users.index');
+        Route::post('/users', [UserController::class, 'store'])->name('users.store');
+        Route::put('/users/{user}', [UserController::class, 'update'])->name('users.update');
+        Route::delete('/users/{user}', [UserController::class, 'destroy'])->name('users.destroy');
+
+        Route::get('/activity', [ActivityLogController::class, 'index'])->name('activity.index');
     });
 
     // Must stay after the /members/{member}/... POST routes above,

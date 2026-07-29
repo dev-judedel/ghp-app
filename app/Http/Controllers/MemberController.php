@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Requests\StoreMemberRequest;
+use App\Http\Requests\UpdateMemberRequest;
 use App\Models\Department;
 use App\Models\Division;
 use App\Models\Member;
@@ -91,7 +92,43 @@ class MemberController extends Controller
         return view('members.show', [
             'member' => $member,
             'currentBenefitPeriod' => $currentBenefitPeriod,
+            'departments' => Department::orderBy('name')->get(),
+            'divisions' => Division::orderBy('member_type')->orderBy('name')->get(),
+            'activityFeed' => $this->buildMemberActivityFeed($member),
         ]);
+    }
+
+    /**
+     * Combines this member's own activity log with activity on their
+     * dependents and reimbursements — those are logged on their own
+     * models (see Dependent/Reimbursement::getActivitylogOptions), so a
+     * change to "Juan's dependent" wouldn't otherwise show up when looking
+     * at Juan's page.
+     */
+    private function buildMemberActivityFeed(Member $member): \Illuminate\Support\Collection
+    {
+        $activities = $member->activities()->with('causer')->get();
+
+        foreach ($member->dependents as $dependent) {
+            $activities = $activities->merge($dependent->activities()->with('causer')->get());
+        }
+
+        foreach ($member->reimbursements as $reimbursement) {
+            $activities = $activities->merge($reimbursement->activities()->with('causer')->get());
+        }
+
+        return $activities->sortByDesc('created_at')->take(30)->values();
+    }
+
+    public function update(UpdateMemberRequest $request, Member $member): RedirectResponse
+    {
+        $member->update($request->validated() + [
+            'is_active' => $request->boolean('is_active', false),
+        ]);
+
+        return redirect()
+            ->route('members.show', $member)
+            ->with('status', "Member {$member->code} updated.");
     }
 
     public function generateBenefitPeriod(Member $member, BenefitAccrualService $accrualService): RedirectResponse

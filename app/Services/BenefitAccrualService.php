@@ -36,6 +36,9 @@ use Carbon\CarbonInterface;
  *     — that's the audit trail), but the benefit period's ghp_used/
  *     ghp_available never reflect more than what the fund actually had.
  *     The uncapped total is available via calculate()['claimed'] if needed.
+ *   - Voided reimbursements (Reimbursement::void()) are excluded from the
+ *     "used" sum entirely — they never counted against the fund at all,
+ *     as opposed to a capped claim which did count, just partially.
  *
  * What was reinterpreted (flagged, needs business-owner confirmation):
  *   - The "day >= 15" cutoff is applied PER MONTH here: a month counts
@@ -73,9 +76,20 @@ class BenefitAccrualService
     /**
      * Mirrors check_update_dependents(): 4200 if the member has at least
      * one GHP-eligible dependent, 3600 otherwise.
+     *
+     * EXCEPTION: if members.ghp_amount_is_manual is true, the member's
+     * stored ghp_amount is used as-is instead — this is how a manual
+     * amount adjustment (see AmountAdjustmentController) actually sticks
+     * through future benefit period generation, rather than being
+     * silently recalculated back to 3600/4200 the next time dependents
+     * change or "Generate benefit period" is clicked.
      */
     public function resolveGhpAmount(Member $member): float
     {
+        if ($member->ghp_amount_is_manual) {
+            return (float) $member->ghp_amount;
+        }
+
         $hasEligibleDependent = $member->dependents->contains(
             fn ($dependent) => $dependent->is_eligible
         );
@@ -173,6 +187,7 @@ class BenefitAccrualService
         $accrued = round($monthlyRate * $monthsAccrued, 2);
 
         $used = (float) $member->reimbursements()
+            ->notVoided()
             ->whereBetween('or_date', [$from, $to])
             ->sum('or_amount');
 

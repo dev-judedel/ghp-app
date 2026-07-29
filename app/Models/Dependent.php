@@ -7,11 +7,13 @@ use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Spatie\Activitylog\LogOptions;
+use Spatie\Activitylog\Traits\LogsActivity;
 
 #[Fillable(['member_id', 'name', 'relation', 'birthdate'])]
 class Dependent extends Model
 {
-    use HasFactory;
+    use HasFactory, LogsActivity;
 
     /**
      * Relation values that trigger the age-21 eligibility cutoff in the legacy
@@ -54,5 +56,14 @@ class Dependent extends Model
 
             return $this->age !== null && $this->age < 21;
         });
+    }
+
+    public function getActivitylogOptions(): LogOptions
+    {
+        return LogOptions::defaults()
+            ->useLogName('dependent')
+            ->logOnly(['member_id', 'name', 'relation', 'birthdate'])
+            ->logOnlyDirty()
+            ->dontSubmitEmptyLogs();
     }
 }

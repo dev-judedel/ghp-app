@@ -23,6 +23,10 @@ class AuthenticatedSessionController extends Controller
         ]);
 
         if (! Auth::attempt($credentials, $request->boolean('remember'))) {
+            activity('auth')
+                ->withProperties(['email' => $credentials['email'], 'ip' => $request->ip()])
+                ->log('Failed login attempt');
+
             throw ValidationException::withMessages([
                 'email' => 'Those credentials don\'t match our records.',
             ]);
@@ -30,11 +34,21 @@ class AuthenticatedSessionController extends Controller
 
         $request->session()->regenerate();
 
+        activity('auth')
+            ->causedBy(Auth::user())
+            ->withProperties(['ip' => $request->ip()])
+            ->log('Logged in');
+
         return redirect()->intended(route('dashboard'));
     }
 
     public function destroy(Request $request): RedirectResponse
     {
+        activity('auth')
+            ->causedBy(Auth::user())
+            ->withProperties(['ip' => $request->ip()])
+            ->log('Logged out');
+
         Auth::guard('web')->logout();
 
         $request->session()->invalidate();

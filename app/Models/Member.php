@@ -10,15 +10,17 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Spatie\Activitylog\LogOptions;
+use Spatie\Activitylog\Traits\LogsActivity;
 
 #[Fillable([
     'code', 'member_type', 'last_name', 'first_name', 'middle_name', 'address',
     'birthdate', 'civil_status', 'apply_date', 'deduction_start_date', 'ghp_amount',
-    'remarks', 'division_id', 'department_id', 'old_code', 'is_active',
+    'ghp_amount_is_manual', 'remarks', 'division_id', 'department_id', 'old_code', 'is_active',
 ])]
 class Member extends Model
 {
-    use HasFactory, SoftDeletes;
+    use HasFactory, SoftDeletes, LogsActivity;
 
     public const MEMBER_TYPE_EMPLOYEE = 0;
     public const MEMBER_TYPE_AGENT = 1;
@@ -35,6 +37,7 @@ class Member extends Model
             'apply_date' => 'date',
             'deduction_start_date' => 'date',
             'ghp_amount' => 'decimal:2',
+            'ghp_amount_is_manual' => 'boolean',
             'is_active' => 'boolean',
         ];
     }
@@ -108,5 +111,18 @@ class Member extends Model
         return Attribute::get(
             fn () => trim("{$this->last_name}, {$this->first_name} {$this->middle_name}")
         );
+    }
+
+    public function getActivitylogOptions(): LogOptions
+    {
+        return LogOptions::defaults()
+            ->useLogName('member')
+            ->logOnly([
+                'code', 'member_type', 'last_name', 'first_name', 'middle_name', 'address',
+                'birthdate', 'civil_status', 'apply_date', 'deduction_start_date', 'ghp_amount',
+                'ghp_amount_is_manual', 'division_id', 'department_id', 'old_code', 'is_active',
+            ])
+            ->logOnlyDirty()
+            ->dontSubmitEmptyLogs();
     }
 }
