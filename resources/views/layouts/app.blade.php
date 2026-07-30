@@ -20,6 +20,7 @@
                 @if (auth()->user()->isAdmin())
                     <a href="{{ route('users.index') }}" class="{{ request()->routeIs('users.*') ? 'active' : '' }}">Users</a>
                     <a href="{{ route('activity.index') }}" class="{{ request()->routeIs('activity.*') ? 'active' : '' }}">Activity Log</a>
+                    <a href="{{ route('data-quality.index') }}" class="{{ request()->routeIs('data-quality.*') ? 'active' : '' }}">Data Quality</a>
                 @endif
             </nav>
             <div class="sidebar-foot">

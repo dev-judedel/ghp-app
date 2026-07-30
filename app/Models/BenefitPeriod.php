@@ -6,6 +6,8 @@ use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Spatie\Activitylog\LogOptions;
+use Spatie\Activitylog\Traits\LogsActivity;
 
 #[Fillable([
     'member_id', 'from_date', 'to_date', 'ghp_amount', 'ghp_available',
@@ -13,7 +15,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 ])]
 class BenefitPeriod extends Model
 {
-    use HasFactory;
+    use HasFactory, LogsActivity;
 
     protected function casts(): array
     {
@@ -40,5 +42,23 @@ class BenefitPeriod extends Model
     public function department(): BelongsTo
     {
         return $this->belongsTo(Department::class);
+    }
+
+    /**
+     * logOnlyDirty() + dontSubmitEmptyLogs() means this only creates a log
+     * entry when a value genuinely changes — a no-op recompute (e.g. the
+     * daily auto-generation job re-touching a period where nothing actually
+     * moved) produces zero entries. Real changes DO get logged, whether
+     * from routine accrual (a new reimbursement changed ghp_used) or a
+     * manual correction from the Data Quality Report — both are worth an
+     * audit trail, just without the noise of "nothing happened" entries.
+     */
+    public function getActivitylogOptions(): LogOptions
+    {
+        return LogOptions::defaults()
+            ->useLogName('benefit_period')
+            ->logOnly(['from_date', 'to_date', 'ghp_amount', 'ghp_used', 'ghp_available'])
+            ->logOnlyDirty()
+            ->dontSubmitEmptyLogs();
     }
 }

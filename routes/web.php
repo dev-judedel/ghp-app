@@ -4,7 +4,9 @@ use App\Http\Controllers\Admin\MemberBulkActionController;
 use App\Http\Controllers\ActivityLogController;
 use App\Http\Controllers\AmountAdjustmentController;
 use App\Http\Controllers\Auth\AuthenticatedSessionController;
+use App\Http\Controllers\BenefitPeriodController;
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\DataQualityController;
 use App\Http\Controllers\DependentController;
 use App\Http\Controllers\MemberController;
 use App\Http\Controllers\ReimbursementController;
@@ -56,6 +58,9 @@ Route::middleware('auth')->group(function () {
         Route::delete('/users/{user}', [UserController::class, 'destroy'])->name('users.destroy');
 
         Route::get('/activity', [ActivityLogController::class, 'index'])->name('activity.index');
+
+        Route::get('/data-quality', [DataQualityController::class, 'index'])->name('data-quality.index');
+        Route::put('/benefit-periods/{benefitPeriod}', [BenefitPeriodController::class, 'update'])->name('benefit-periods.update');
     });
 
     // Must stay after the /members/{member}/... POST routes above,
