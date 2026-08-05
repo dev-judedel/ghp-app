@@ -32,7 +32,9 @@ Route::middleware('auth')->group(function () {
 
     Route::get('/reports', [ReportController::class, 'index'])->name('reports.index');
     Route::get('/reports/annual-ghp', [ReportController::class, 'annualGhp'])->name('reports.annual-ghp');
+    Route::get('/reports/annual-ghp/csv', [ReportController::class, 'annualGhpCsv'])->name('reports.annual-ghp.csv');
     Route::get('/reports/reimbursements', [ReportController::class, 'reimbursements'])->name('reports.reimbursements');
+    Route::get('/reports/reimbursements/csv', [ReportController::class, 'reimbursementsCsv'])->name('reports.reimbursements.csv');
     Route::get('/members/{member}/mdr', [ReportController::class, 'memberDataRecord'])->name('members.mdr');
 
     Route::middleware('admin')->group(function () {

@@ -10,6 +10,8 @@ use App\Models\Reimbursement;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Response as ResponseFacade;
 use Illuminate\View\View;
 
 class ReportController extends Controller
@@ -29,11 +31,12 @@ class ReportController extends Controller
     }
 
     /**
-     * Annual GHP report: one row per member showing their benefit period
-     * for the selected coverage year (or their latest on record if no year
-     * is specified), filterable the same way the member list is.
+     * Shared query logic for the Annual GHP report — one row per member
+     * with their benefit period for the selected coverage year (or their
+     * latest on record if no year given). Used by both the PDF and CSV
+     * export so the two never drift apart in what they show.
      */
-    public function annualGhp(Request $request): Response
+    private function buildAnnualGhpRows(Request $request): Collection
     {
         $type = $request->query('type');
         $departmentId = $request->query('department');
@@ -41,7 +44,7 @@ class ReportController extends Controller
         $status = $request->query('status', 'active');
         $year = $request->query('year');
 
-        $members = Member::query()
+        return Member::query()
             ->with(['division', 'department'])
             ->with(['benefitPeriods' => function ($query) use ($year) {
                 $query->orderByDesc('from_date');
@@ -65,22 +68,52 @@ class ReportController extends Controller
             ])
             ->filter(fn ($row) => $row->period !== null)
             ->values();
+    }
+
+    public function annualGhp(Request $request): Response
+    {
+        $rows = $this->buildAnnualGhpRows($request);
+        $year = $request->query('year');
 
         $pdf = Pdf::loadView('reports.pdf.annual-ghp', [
-            'rows' => $members,
+            'rows' => $rows,
             'year' => $year,
             'generatedAt' => now(),
-            'filters' => compact('type', 'departmentId', 'divisionId', 'status'),
+            'filters' => $request->only(['type', 'department', 'division', 'status']),
         ])->setPaper('a4', 'landscape');
 
         return $pdf->download('annual-ghp-report-'.($year ?: 'latest').'.pdf');
     }
 
+    public function annualGhpCsv(Request $request): Response
+    {
+        $rows = $this->buildAnnualGhpRows($request);
+        $year = $request->query('year');
+
+        return $this->streamCsv(
+            'annual-ghp-report-'.($year ?: 'latest').'.csv',
+            ['Code', 'Name', 'Type', 'Division', 'Department', 'Status', 'Coverage From', 'Coverage To', 'GHP Amount', 'Used', 'Available'],
+            $rows->map(fn ($row) => [
+                $row->member->code,
+                $row->member->full_name,
+                $row->member->member_type === Member::MEMBER_TYPE_AGENT ? 'Agent' : 'Employee',
+                $row->member->division->name ?? '',
+                $row->member->department->name ?? '',
+                $row->member->is_active ? 'Active' : 'Inactive',
+                $row->period->from_date->format('Y-m-d'),
+                $row->period->to_date->format('Y-m-d'),
+                $row->period->ghp_amount,
+                $row->period->ghp_used,
+                $row->period->ghp_available,
+            ])
+        );
+    }
+
     /**
-     * Reimbursement report: reimbursements within a date range, filterable
-     * by member type/division/department.
+     * Shared query logic for the Reimbursement report. Used by both the
+     * PDF and CSV export.
      */
-    public function reimbursements(Request $request): Response
+    private function buildReimbursementsQuery(Request $request)
     {
         $request->validate([
             'from' => ['required', 'date'],
@@ -91,7 +124,7 @@ class ReportController extends Controller
         $departmentId = $request->query('department');
         $divisionId = $request->query('division');
 
-        $reimbursements = Reimbursement::query()
+        return Reimbursement::query()
             ->with(['member.division', 'member.department'])
             ->whereBetween('or_date', [$request->query('from'), $request->query('to')])
             ->whereHas('member', function ($query) use ($type, $departmentId, $divisionId) {
@@ -103,6 +136,11 @@ class ReportController extends Controller
             })
             ->orderBy('or_date')
             ->get();
+    }
+
+    public function reimbursements(Request $request): Response
+    {
+        $reimbursements = $this->buildReimbursementsQuery($request);
 
         $pdf = Pdf::loadView('reports.pdf.reimbursements', [
             'reimbursements' => $reimbursements,
@@ -116,9 +154,33 @@ class ReportController extends Controller
         return $pdf->download('reimbursement-report-'.$request->query('from').'-to-'.$request->query('to').'.pdf');
     }
 
+    public function reimbursementsCsv(Request $request): Response
+    {
+        $reimbursements = $this->buildReimbursementsQuery($request);
+
+        return $this->streamCsv(
+            'reimbursement-report-'.$request->query('from').'-to-'.$request->query('to').'.csv',
+            ['OR Date', 'Member Code', 'Member Name', 'Type', 'Division', 'OR No', 'Hospital', 'Amount', 'Voided', 'Voided Reason'],
+            $reimbursements->map(fn ($r) => [
+                $r->or_date->format('Y-m-d'),
+                $r->member->code,
+                $r->member->full_name,
+                $r->member->member_type === Member::MEMBER_TYPE_AGENT ? 'Agent' : 'Employee',
+                $r->member->division->name ?? '',
+                $r->or_no ?? '',
+                $r->hospital_name ?? '',
+                $r->or_amount,
+                $r->is_voided ? 'Yes' : 'No',
+                $r->voided_reason ?? '',
+            ])
+        );
+    }
+
     /**
      * Member Data Record (MDR): single-member profile + benefit + dependent
-     * summary, matching the legacy system's per-member printout.
+     * summary, matching the legacy system's per-member printout. PDF only
+     * — it's a formatted personal record, not a data export, so a CSV
+     * version wouldn't make much sense.
      */
     public function memberDataRecord(Member $member): Response
     {
@@ -137,5 +199,29 @@ class ReportController extends Controller
         ])->setPaper('a4', 'portrait');
 
         return $pdf->download("mdr-{$member->code}.pdf");
+    }
+
+    /**
+     * Streams a CSV using plain fputcsv() — no package needed (unlike
+     * XLSX, which would require another offline bootstrap round-trip for
+     * maatwebsite/excel). Fine for "export the numbers," which is the
+     * actual use case here.
+     */
+    private function streamCsv(string $filename, array $headers, Collection $rows): Response
+    {
+        return ResponseFacade::streamDownload(function () use ($headers, $rows) {
+            $handle = fopen('php://output', 'w');
+
+            // UTF-8 BOM so Excel doesn't mangle the ₱ sign or special characters.
+            fwrite($handle, "\xEF\xBB\xBF");
+
+            fputcsv($handle, $headers);
+
+            foreach ($rows as $row) {
+                fputcsv($handle, $row);
+            }
+
+            fclose($handle);
+        }, $filename, ['Content-Type' => 'text/csv']);
     }
 }

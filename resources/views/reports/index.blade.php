@@ -6,7 +6,7 @@
     <div class="card">
         <div class="card-head">
             <div>
-                <span class="eyebrow">PDF export</span>
+                <span class="eyebrow">PDF or CSV export</span>
                 <h2>Annual GHP report</h2>
             </div>
         </div>
@@ -62,7 +62,8 @@
                     </select>
                 </div>
 
-                <button type="submit" class="btn btn-primary">Generate PDF</button>
+                <button type="submit" formaction="{{ route('reports.annual-ghp') }}" class="btn btn-primary">Generate PDF</button>
+                <button type="submit" formaction="{{ route('reports.annual-ghp.csv') }}" formtarget="_self" class="btn btn-ghost">Download CSV</button>
             </div>
         </form>
     </div>
@@ -70,7 +71,7 @@
     <div class="card">
         <div class="card-head">
             <div>
-                <span class="eyebrow">PDF export</span>
+                <span class="eyebrow">PDF or CSV export</span>
                 <h2>Reimbursement report</h2>
             </div>
         </div>
@@ -116,7 +117,8 @@
                     </select>
                 </div>
 
-                <button type="submit" class="btn btn-primary">Generate PDF</button>
+                <button type="submit" formaction="{{ route('reports.reimbursements') }}" class="btn btn-primary">Generate PDF</button>
+                <button type="submit" formaction="{{ route('reports.reimbursements.csv') }}" formtarget="_self" class="btn btn-ghost">Download CSV</button>
             </div>
         </form>
     </div>
