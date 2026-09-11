@@ -339,3 +339,52 @@ dialog.modal::backdrop {
     .sidebar { display: none; }
     .content { padding: 16px; }
 }
+
+/* ---------- Avatar / profile header (appended — nothing above this
+   comment was changed) ---------- */
+
+.avatar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    object-fit: cover;
+    flex-shrink: 0;
+    border: 1px solid var(--border);
+}
+.avatar-sm { width: 24px; height: 24px; font-size: 10px; }
+.avatar-lg { width: 72px; height: 72px; font-size: 24px; }
+.avatar-initials {
+    background: var(--primary-soft);
+    color: var(--primary-dark);
+    font-weight: 700;
+    font-size: 15px;
+}
+
+.topbar-profile-link {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--ink-muted);
+}
+.topbar-profile-link:hover { color: var(--ink); text-decoration: none; }
+
+.profile-head {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+.profile-actions {
+    display: flex;
+    gap: 8px;
+    margin-left: auto;
+    flex-wrap: wrap;
+}
+
+@media (max-width: 480px) {
+    .profile-actions { margin-left: 0; width: 100%; }
+    .profile-actions .btn { flex: 1; justify-content: center; }
+}

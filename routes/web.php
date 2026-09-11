@@ -9,6 +9,7 @@ use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DataQualityController;
 use App\Http\Controllers\DependentController;
 use App\Http\Controllers\MemberController;
+use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\ReimbursementController;
 use App\Http\Controllers\ReportController;
 use App\Http\Controllers\UserController;
@@ -27,6 +28,10 @@ Route::middleware('auth')->group(function () {
     Route::post('/logout', [AuthenticatedSessionController::class, 'destroy'])->name('logout');
 
     Route::get('/dashboard', DashboardController::class)->name('dashboard');
+
+    Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
+    Route::put('/profile', [ProfileController::class, 'update'])->name('profile.update');
+    Route::put('/profile/password', [ProfileController::class, 'updatePassword'])->name('profile.update-password');
 
     Route::get('/members', [MemberController::class, 'index'])->name('members.index');
 
