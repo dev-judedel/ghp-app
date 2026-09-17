@@ -8,6 +8,7 @@ use App\Http\Controllers\BenefitPeriodController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DataQualityController;
 use App\Http\Controllers\DependentController;
+use App\Http\Controllers\DepartmentController;
 use App\Http\Controllers\MemberController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\ReimbursementController;
@@ -24,7 +25,7 @@ Route::middleware('guest')->group(function () {
     Route::post('/login', [AuthenticatedSessionController::class, 'store']);
 });
 
-Route::middleware('auth')->group(function () {
+Route::middleware(['auth', 'active'])->group(function () {
     Route::post('/logout', [AuthenticatedSessionController::class, 'destroy'])->name('logout');
 
     Route::get('/dashboard', DashboardController::class)->name('dashboard');
@@ -47,6 +48,7 @@ Route::middleware('auth')->group(function () {
         Route::post('/members', [MemberController::class, 'store'])->name('members.store');
         Route::put('/members/{member}', [MemberController::class, 'update'])->name('members.update');
         Route::post('/members/{member}/generate-benefit-period', [MemberController::class, 'generateBenefitPeriod'])->name('members.generate-benefit-period');
+        Route::patch('/members/{member}/status', [MemberController::class, 'updateStatus'])->name('members.update-status');
         Route::post('/members/{member}/reimbursements', [ReimbursementController::class, 'store'])->name('members.reimbursements.store');
         Route::put('/members/{member}/reimbursements/{reimbursement}', [ReimbursementController::class, 'update'])->name('members.reimbursements.update');
         Route::post('/members/{member}/reimbursements/{reimbursement}/void', [ReimbursementController::class, 'void'])->name('members.reimbursements.void');
@@ -62,7 +64,12 @@ Route::middleware('auth')->group(function () {
         Route::get('/users', [UserController::class, 'index'])->name('users.index');
         Route::post('/users', [UserController::class, 'store'])->name('users.store');
         Route::put('/users/{user}', [UserController::class, 'update'])->name('users.update');
+        Route::patch('/users/{user}/status', [UserController::class, 'updateStatus'])->name('users.update-status');
         Route::delete('/users/{user}', [UserController::class, 'destroy'])->name('users.destroy');
+
+        Route::post('/departments', [DepartmentController::class, 'store'])->name('departments.store');
+        Route::put('/departments/{department}', [DepartmentController::class, 'update'])->name('departments.update');
+        Route::delete('/departments/{department}', [DepartmentController::class, 'destroy'])->name('departments.destroy');
 
         Route::get('/activity', [ActivityLogController::class, 'index'])->name('activity.index');
 

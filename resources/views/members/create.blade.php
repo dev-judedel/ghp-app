@@ -26,14 +26,19 @@
 
             <div style="display: flex; gap: 16px;">
                 <div class="field" style="flex: 1;">
-                    <label for="code">Member code</label>
-                    <input type="text" id="code" name="code" value="{{ old('code') }}" required>
+                    <label for="code">Member code (optional)</label>
+                    <input type="text" id="code" name="code" value="{{ old('code') }}" placeholder="Leave blank to auto-generate">
+                </div>
+                <div class="field" style="flex: 1;">
+                    <label for="email">Email account</label>
+                    <input type="email" id="email" name="email" value="{{ old('email') }}" required>
                 </div>
                 <div class="field" style="flex: 1;">
                     <label for="old_code">Old code (optional)</label>
                     <input type="text" id="old_code" name="old_code" value="{{ old('old_code') }}">
                 </div>
             </div>
+            <p class="hint" style="margin-top: -8px;">Leave the member code blank to auto-generate one (ALSC-######), or type your own.</p>
 
             <div class="field">
                 <label>Member type</label>

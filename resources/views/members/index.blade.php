@@ -6,7 +6,7 @@
     // 'active' is the implicit default (see MemberController::index), so it
     // shouldn't count as a "filter applied" badge — only deviations from it do.
     $activeFilterCount = collect([$type, $departmentId, $divisionId, $status !== 'active' ? $status : null])->filter()->count();
-    $hasMemberCreationErrors = $errors->any() && $errors->has('code');
+    $hasMemberCreationErrors = $errors->any() && ($errors->has('email') || $errors->has('code'));
 @endphp
 
 @section('content')
@@ -130,14 +130,19 @@
                     <h3 style="margin-bottom: 10px;">Identity</h3>
                     <div style="display: flex; gap: 12px;">
                         <div class="field" style="flex: 1;">
-                            <label for="code">Member code</label>
-                            <input type="text" id="code" name="code" value="{{ old('code') }}" required>
+                            <label for="code">Member code (optional)</label>
+                            <input type="text" id="code" name="code" value="{{ old('code') }}" placeholder="Auto-generate">
+                        </div>
+                        <div class="field" style="flex: 1;">
+                            <label for="email">Email account</label>
+                            <input type="email" id="email" name="email" value="{{ old('email') }}" required>
                         </div>
                         <div class="field" style="flex: 1;">
                             <label for="old_code">Old code (optional)</label>
                             <input type="text" id="old_code" name="old_code" value="{{ old('old_code') }}">
                         </div>
                     </div>
+                    <p class="hint" style="margin-top: -8px;">Leave the member code blank to auto-generate one (ALSC-######), or type your own.</p>
 
                     <div class="field">
                         <label>Member type</label>
@@ -267,8 +272,8 @@
                 }
 
                 const labels = {
-                    activate: `Mark ${checked} member(s) as Active?`,
-                    deactivate: `Mark ${checked} member(s) as Inactive?`,
+                    activate: `Activate ${checked} member(s)?`,
+                    deactivate: `Deactivate ${checked} member(s)? They won't be able to have benefit periods generated while inactive.`,
                     generate_benefit_period: `Generate this year's benefit period for ${checked} member(s)? Inactive members will be skipped.`,
                 };
 
@@ -278,6 +283,52 @@
 
                 document.getElementById('bulk_action').value = action;
                 document.getElementById('bulk-form').submit();
+            }
+
+            const memberStatusUrlBase = '{{ url('members') }}';
+            const csrfToken = '{{ csrf_token() }}';
+
+            /**
+             * Builds and submits a standalone form for the Action column,
+             * rather than a <form> in the Blade markup: that form sits
+             * inside #bulk-form (needed for the checkboxes/bulk buttons),
+             * and a <form> nested inside another <form> is invalid HTML —
+             * browsers silently drop the inner tag and merge its inputs into
+             * the outer form, so submitting it here would have gone to
+             * members.bulk-action instead of members.update-status.
+             */
+            function submitMemberStatus(memberId, isActive, code) {
+                const verb = isActive ? 'Deactivate' : 'Reactivate';
+
+                if (! confirm(`${verb} ${code}?`)) {
+                    return;
+                }
+
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.action = memberStatusUrlBase + '/' + memberId + '/status';
+                form.style.display = 'none';
+
+                const fields = {
+                    _token: csrfToken,
+                    _method: 'PATCH',
+                    search: @json($search),
+                    type: @json($type),
+                    department: @json($departmentId),
+                    division: @json($divisionId),
+                    status: @json($status),
+                };
+
+                for (const [name, value] of Object.entries(fields)) {
+                    const input = document.createElement('input');
+                    input.type = 'hidden';
+                    input.name = name;
+                    input.value = value ?? '';
+                    form.appendChild(input);
+                }
+
+                document.body.appendChild(form);
+                form.submit();
             }
 
             @if ($hasMemberCreationErrors)

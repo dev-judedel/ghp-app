@@ -5,7 +5,7 @@
 @php
     $hasReimbursementErrors = $errors->any() && $errors->has('or_amount');
     $hasDependentErrors = $errors->any() && ($errors->has('name') || $errors->has('relation'));
-    $hasMemberEditErrors = $errors->any() && $errors->has('code') && old('_form') === 'edit_member';
+    $hasMemberEditErrors = $errors->any() && ($errors->has('code') || $errors->has('email')) && old('_form') === 'edit_member';
     $hasVoidErrors = $errors->any() && $errors->has('reason');
 @endphp
 
@@ -41,6 +41,12 @@
                     <td>{{ $member->department->name ?? '—' }}</td>
                 </tr>
                 <tr>
+                    <th>Email</th>
+                    <td>{{ $member->email ?? '—' }}</td>
+                    <th>Old code</th>
+                    <td class="code">{{ $member->old_code ?? '—' }}</td>
+                </tr>
+                <tr>
                     <th>Birthdate</th>
                     <td>{{ optional($member->birthdate)->format('M d, Y') ?? '—' }} @if($member->age) ({{ $member->age }} yrs) @endif</td>
                     <th>Civil status</th>
@@ -49,8 +55,8 @@
                 <tr>
                     <th>Deduction start</th>
                     <td>{{ optional($member->deduction_start_date)->format('M d, Y') ?? '—' }}</td>
-                    <th>Old code</th>
-                    <td class="code">{{ $member->old_code ?? '—' }}</td>
+                    <th></th>
+                    <td></td>
                 </tr>
                 @if ($member->address)
                     <tr>
@@ -660,6 +666,10 @@
                         <div class="field" style="flex: 1;">
                             <label for="edit_code">Member code</label>
                             <input type="text" id="edit_code" name="code" value="{{ old('code', $member->code) }}" required>
+                        </div>
+                        <div class="field" style="flex: 1;">
+                            <label for="edit_email">Email account</label>
+                            <input type="email" id="edit_email" name="email" value="{{ old('email', $member->email) }}">
                         </div>
                         <div class="field" style="flex: 1;">
                             <label for="edit_old_code">Old code (optional)</label>

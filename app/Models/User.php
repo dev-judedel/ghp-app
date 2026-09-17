@@ -6,6 +6,7 @@ namespace App\Models;
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
@@ -15,12 +16,18 @@ use Illuminate\Support\Str;
 use Spatie\Activitylog\LogOptions;
 use Spatie\Activitylog\Traits\LogsActivity;
 
-#[Fillable(['name', 'email', 'password', 'role', 'profile_photo_path'])]
+#[Fillable(['name', 'email', 'password', 'role', 'profile_photo_path', 'user_code', 'is_active'])]
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable
 {
     /** @use HasFactory<UserFactory> */
     use HasFactory, Notifiable, LogsActivity;
+
+    /**
+     * Prefix for the system-generated User Management code (ALSC-######).
+     * See generateUniqueUserCode() below.
+     */
+    public const CODE_PREFIX = 'ALSC-';
 
     /**
      * Get the attributes that should be cast.
@@ -32,12 +39,33 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'is_active' => 'boolean',
         ];
     }
 
     public function isAdmin(): bool
     {
         return $this->role === 'admin';
+    }
+
+    public function scopeActive(Builder $query): Builder
+    {
+        return $query->where('is_active', true);
+    }
+
+    public function scopeInactive(Builder $query): Builder
+    {
+        return $query->where('is_active', false);
+    }
+
+    /**
+     * Generates a unique ALSC-###### code for a new user account. The
+     * Administrator never types this in (there's no user_code field on
+     * StoreUserRequest at all) — it's always system-assigned.
+     */
+    public static function generateUniqueUserCode(): string
+    {
+        return \App\Support\UniqueCodeGenerator::generate('users', 'user_code', self::CODE_PREFIX);
     }
 
     /**
@@ -75,7 +103,7 @@ class User extends Authenticatable
     {
         return LogOptions::defaults()
             ->useLogName('user')
-            ->logOnly(['name', 'email', 'role', 'profile_photo_path'])
+            ->logOnly(['name', 'email', 'role', 'profile_photo_path', 'is_active', 'user_code'])
             ->logOnlyDirty()
             ->dontSubmitEmptyLogs();
     }

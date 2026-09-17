@@ -32,6 +32,21 @@ class AuthenticatedSessionController extends Controller
             ]);
         }
 
+        // Checked after credentials match (not before) so a deactivated
+        // account doesn't get a different error than a wrong password would
+        // — that would let someone confirm an email exists just by trying it.
+        if (! Auth::user()->is_active) {
+            Auth::logout();
+
+            activity('auth')
+                ->withProperties(['email' => $credentials['email'], 'ip' => $request->ip()])
+                ->log('Blocked login attempt on deactivated account');
+
+            throw ValidationException::withMessages([
+                'email' => 'This account has been deactivated. Please contact the system administrator.',
+            ]);
+        }
+
         $request->session()->regenerate();
 
         activity('auth')

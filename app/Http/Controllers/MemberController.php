@@ -22,22 +22,14 @@ class MemberController extends Controller
         $divisionId = $request->query('division');   // division id | null
         $status = $request->query('status', 'active'); // 'active' (default) | 'inactive' | 'all'
 
-        $members = Member::query()
+        $members = Member::filtered([
+            'search' => $search,
+            'type' => $type,
+            'department' => $departmentId,
+            'division' => $divisionId,
+            'status' => $status,
+        ])
             ->with(['division', 'department'])
-            ->when($search !== '', function ($query) use ($search) {
-                $query->where(function ($q) use ($search) {
-                    $q->where('code', 'ilike', "%{$search}%")
-                        ->orWhere('last_name', 'ilike', "%{$search}%")
-                        ->orWhere('first_name', 'ilike', "%{$search}%");
-                });
-            })
-            ->when($type === 'employee', fn ($query) => $query->employees())
-            ->when($type === 'agent', fn ($query) => $query->agents())
-            ->when($departmentId, fn ($query) => $query->where('department_id', $departmentId))
-            ->when($divisionId, fn ($query) => $query->where('division_id', $divisionId))
-            ->when($status === 'active', fn ($query) => $query->active())
-            ->when($status === 'inactive', fn ($query) => $query->inactive())
-            // $status === 'all' -> no filter applied, shows both
             ->orderBy('last_name')
             ->orderBy('first_name')
             ->paginate(25)
@@ -67,9 +59,15 @@ class MemberController extends Controller
 
     public function store(StoreMemberRequest $request): RedirectResponse
     {
-        $member = Member::create($request->validated() + [
-            'is_active' => $request->boolean('is_active', true),
-        ]);
+        // Built as a mutable array (not $validated + [...]) on purpose:
+        // 'code' is now a validated key too, and array union (+) keeps the
+        // LEFT side's value on collisions — that would silently ignore this
+        // override whenever the admin left it blank.
+        $data = $request->validated();
+        $data['code'] = $request->filled('code') ? $data['code'] : Member::generateUniqueCode();
+        $data['is_active'] = $request->boolean('is_active', true);
+
+        $member = Member::create($data);
 
         return redirect()
             ->route('members.show', $member)
@@ -129,6 +127,25 @@ class MemberController extends Controller
         return redirect()
             ->route('members.show', $member)
             ->with('status', "Member {$member->code} updated.");
+    }
+
+    /**
+     * Toggles Active <-> Inactive for a single member — the per-row Action
+     * column on the table. Separate from the bulk activate/deactivate in
+     * MemberBulkActionController, which acts on multiple checked members
+     * at once; this always affects exactly the one $member passed in.
+     */
+    public function updateStatus(Request $request, Member $member): RedirectResponse
+    {
+        abort_unless(auth()->user()->isAdmin(), 403);
+
+        $activating = ! $member->is_active;
+
+        $member->update(['is_active' => $activating]);
+
+        return redirect()
+            ->route('members.index', $request->only(['search', 'type', 'department', 'division', 'status']))
+            ->with('status', 'Member '.$member->code.' '.($activating ? 'reactivated.' : 'deactivated.'));
     }
 
     public function generateBenefitPeriod(Member $member, BenefitAccrualService $accrualService): RedirectResponse

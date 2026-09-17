@@ -2,10 +2,14 @@
 
 namespace App\Http\Requests;
 
+use App\Http\Requests\Concerns\HasEmailRule;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 
 class StoreMemberRequest extends FormRequest
 {
+    use HasEmailRule;
+
     public function authorize(): bool
     {
         return $this->user()?->isAdmin() ?? false;
@@ -14,7 +18,11 @@ class StoreMemberRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'code' => ['required', 'string', 'max:50', 'unique:members,code'],
+            // Optional: if the admin leaves this blank, MemberController::store()
+            // generates one (Member::generateUniqueCode(), format ALSC-######).
+            // If they type one in, it's used as-is once validated here.
+            'code' => ['nullable', 'string', 'max:50', 'unique:members,code'],
+            'email' => ['required', 'max:255', $this->emailRule(), 'unique:members,email'],
             'member_type' => ['required', 'in:0,1'],
             'last_name' => ['required', 'string', 'max:255'],
             'first_name' => ['required', 'string', 'max:255'],

@@ -16,6 +16,7 @@ class MemberFactory extends Factory
     {
         return [
             'code' => strtoupper($this->faker->unique()->bothify('T###')),
+            'email' => $this->faker->unique()->safeEmail(),
             'member_type' => Member::MEMBER_TYPE_EMPLOYEE,
             'last_name' => $this->faker->lastName(),
             'first_name' => $this->faker->firstName(),

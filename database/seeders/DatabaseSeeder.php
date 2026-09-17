@@ -17,7 +17,7 @@ class DatabaseSeeder extends Seeder
     {
         User::factory()->create([
             'name' => 'GHP Admin',
-            'email' => 'admin@ghp.local',
+            'email' => 'admin@alsc.ghp',
             'password' => bcrypt('password'),
             'role' => 'admin',
         ]);
