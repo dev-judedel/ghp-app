@@ -18,7 +18,9 @@ class UpdateDepartmentRequest extends FormRequest
 
         return [
             'name' => ['required', 'string', 'max:255', Rule::unique('departments', 'name')->ignore($department?->id)],
-            'division_id' => ['nullable', Rule::exists('divisions', 'id')],
+            // See StoreDepartmentRequest — free-text name, resolved/created
+            // by DepartmentController, not a division_id select anymore.
+            'division' => ['nullable', 'string', 'max:255'],
         ];
     }
 }

@@ -10,6 +10,7 @@ use App\Http\Controllers\DataQualityController;
 use App\Http\Controllers\DependentController;
 use App\Http\Controllers\DepartmentController;
 use App\Http\Controllers\MemberController;
+use App\Http\Controllers\MemberImportController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\ReimbursementController;
 use App\Http\Controllers\ReportController;
@@ -46,6 +47,8 @@ Route::middleware(['auth', 'active'])->group(function () {
     Route::middleware('admin')->group(function () {
         Route::post('/members/bulk-action', [MemberBulkActionController::class, 'store'])->name('members.bulk-action');
         Route::post('/members', [MemberController::class, 'store'])->name('members.store');
+        Route::get('/members/import/template', [MemberImportController::class, 'template'])->name('members.import.template');
+        Route::post('/members/import', [MemberImportController::class, 'import'])->name('members.import');
         Route::put('/members/{member}', [MemberController::class, 'update'])->name('members.update');
         Route::post('/members/{member}/generate-benefit-period', [MemberController::class, 'generateBenefitPeriod'])->name('members.generate-benefit-period');
         Route::patch('/members/{member}/status', [MemberController::class, 'updateStatus'])->name('members.update-status');

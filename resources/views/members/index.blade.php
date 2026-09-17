@@ -7,6 +7,8 @@
     // shouldn't count as a "filter applied" badge — only deviations from it do.
     $activeFilterCount = collect([$type, $departmentId, $divisionId, $status !== 'active' ? $status : null])->filter()->count();
     $hasMemberCreationErrors = $errors->any() && ($errors->has('email') || $errors->has('code'));
+    $hasImportErrors = $errors->any() && $errors->has('csv_file');
+    $importReport = session('import_report');
 @endphp
 
 @section('content')
@@ -104,18 +106,28 @@
         </form>
     </dialog>
 
-    {{-- Add member modal --}}
+    {{-- Add member modal — two tabs sharing one dialog: single-record form
+         (unchanged from before) and CSV bulk import (new). Each tab is its
+         own independent <form>, not nested inside the other — nesting a
+         <form> inside another <form> is invalid HTML and silently breaks
+         submission (see the fix on the per-row Deactivate button earlier). --}}
     @if (auth()->user()->isAdmin())
         <dialog id="addMemberModal" class="modal" style="max-width: 640px;">
-            <form method="POST" action="{{ route('members.store') }}">
-                @csrf
+            <div class="modal-head">
+                <h2>Add member</h2>
+                <button type="button" class="modal-close" onclick="addMemberModal.close()" aria-label="Close">&times;</button>
+            </div>
 
-                <div class="modal-head">
-                    <h2>Add member</h2>
-                    <button type="button" class="modal-close" onclick="addMemberModal.close()" aria-label="Close">&times;</button>
-                </div>
+            <div style="padding: 0 24px 12px; display: flex; gap: 8px; border-bottom: 1px solid var(--border);">
+                <button type="button" id="tab-single" class="btn btn-ghost" onclick="showAddMemberTab('single')">Add single member</button>
+                <button type="button" id="tab-bulk" class="btn btn-ghost" onclick="showAddMemberTab('bulk')">Bulk import (CSV)</button>
+            </div>
 
-                <div class="modal-body" style="max-height: 70vh; overflow-y: auto;">
+            <div id="single-add-section">
+                <form method="POST" action="{{ route('members.store') }}">
+                    @csrf
+
+                    <div class="modal-body" style="max-height: 65vh; overflow-y: auto;">
                     @if ($hasMemberCreationErrors)
                         <div class="field">
                             <p class="error" style="font-weight: 600;">Please fix the following:</p>
@@ -243,7 +255,78 @@
                     <button type="button" class="btn btn-ghost" onclick="addMemberModal.close()">Cancel</button>
                     <button type="submit" class="btn btn-primary">Save member</button>
                 </div>
-            </form>
+                </form>
+            </div>
+
+            <div id="bulk-import-section" style="display: none;">
+                <form method="POST" action="{{ route('members.import') }}" enctype="multipart/form-data">
+                    @csrf
+
+                    <div class="modal-body" style="max-height: 65vh; overflow-y: auto;">
+                        @if ($hasImportErrors)
+                            <div class="field">
+                                <p class="error" style="font-weight: 600;">Please fix the following:</p>
+                                <ul style="margin: 4px 0 0; padding-left: 18px; color: var(--danger); font-size: 13px;">
+                                    @foreach ($errors->all() as $error)
+                                        <li>{{ $error }}</li>
+                                    @endforeach
+                                </ul>
+                            </div>
+                        @endif
+
+                        <div class="field">
+                            <label>1. Download the template</label>
+                            <p class="hint" style="margin-top: 0;">Fill it in, then upload it below. <strong>CSV only</strong> — Excel/XLSX files aren't supported.</p>
+                            <a href="{{ route('members.import.template') }}" class="btn btn-ghost">Download CSV template</a>
+                        </div>
+
+                        <div class="field">
+                            <label>Required columns</label>
+                            <p class="hint" style="margin-top: 0;">
+                                <code>email</code>, <code>member_type</code> (Employee/Agent), <code>last_name</code>,
+                                <code>first_name</code>, and <code>ghp_amount</code> must be filled in for every row —
+                                a row missing any of these is skipped and reported below, the rest of the file still
+                                imports. <code>code</code> is optional: leave it blank to auto-generate ALSC-######.
+                                Everything else (middle_name, address, birthdate, civil_status, division, department,
+                                apply_date, deduction_start_date, old_code, is_active) is optional too.
+                            </p>
+                        </div>
+
+                        <div class="field" style="{{ $importReport ? '' : 'margin-bottom: 0;' }}">
+                            <label for="csv_file">2. Upload your CSV</label>
+                            <input type="file" id="csv_file" name="csv_file" accept=".csv,text/csv" required>
+                        </div>
+
+                        @if ($importReport)
+                            <div class="field" style="margin-bottom: 0;">
+                                <label>Import result</label>
+                                <p class="hint" style="margin-top: 0;">
+                                    <strong style="color: var(--success);">{{ $importReport['created'] }}</strong> member(s) imported
+                                    out of {{ $importReport['total'] }} row(s) read.
+                                    @if (count($importReport['skipped']) > 0)
+                                        <strong style="color: var(--danger);">{{ count($importReport['skipped']) }}</strong> row(s) skipped.
+                                    @endif
+                                    @if ($importReport['truncated'] ?? false)
+                                        <br><strong style="color: var(--danger);">File was larger than 5,000 rows — only the first 5,000 were processed.</strong> Split the file and re-import the rest.
+                                    @endif
+                                </p>
+                                @if (count($importReport['skipped']) > 0)
+                                    <ul style="margin: 4px 0 0; padding-left: 18px; font-size: 12px; color: var(--ink-muted); max-height: 160px; overflow-y: auto;">
+                                        @foreach ($importReport['skipped'] as $skip)
+                                            <li>Row {{ $skip['row'] }}: {{ $skip['reason'] }}</li>
+                                        @endforeach
+                                    </ul>
+                                @endif
+                            </div>
+                        @endif
+                    </div>
+
+                    <div class="modal-foot">
+                        <button type="button" class="btn btn-ghost" onclick="addMemberModal.close()">Close</button>
+                        <button type="submit" class="btn btn-primary">Import</button>
+                    </div>
+                </form>
+            </div>
         </dialog>
     @endif
 
@@ -289,6 +372,21 @@
             const csrfToken = '{{ csrf_token() }}';
 
             /**
+             * Switches between the two tabs sharing #addMemberModal. Both
+             * sections are always in the DOM (just hidden) rather than
+             * swapped in/out, so the browser's native file-picker state and
+             * any typed-in single-add fields survive a tab switch.
+             */
+            function showAddMemberTab(tab) {
+                document.getElementById('single-add-section').style.display = tab === 'single' ? 'block' : 'none';
+                document.getElementById('bulk-import-section').style.display = tab === 'bulk' ? 'block' : 'none';
+                document.getElementById('tab-single').classList.toggle('btn-primary', tab === 'single');
+                document.getElementById('tab-single').classList.toggle('btn-ghost', tab !== 'single');
+                document.getElementById('tab-bulk').classList.toggle('btn-primary', tab === 'bulk');
+                document.getElementById('tab-bulk').classList.toggle('btn-ghost', tab !== 'bulk');
+            }
+
+            /**
              * Builds and submits a standalone form for the Action column,
              * rather than a <form> in the Blade markup: that form sits
              * inside #bulk-form (needed for the checkboxes/bulk buttons),
@@ -332,7 +430,13 @@
             }
 
             @if ($hasMemberCreationErrors)
+                showAddMemberTab('single');
                 addMemberModal.showModal();
+            @elseif ($hasImportErrors || $importReport)
+                showAddMemberTab('bulk');
+                addMemberModal.showModal();
+            @else
+                showAddMemberTab('single');
             @endif
         </script>
     @endif

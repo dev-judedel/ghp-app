@@ -13,18 +13,49 @@ class DepartmentManagementTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_an_admin_can_add_a_department(): void
+    public function test_an_admin_can_add_a_department_with_an_existing_division_name(): void
     {
         $admin = User::factory()->create(['role' => 'admin', 'is_active' => true]);
-        $division = Division::factory()->create();
+        $division = Division::factory()->create(['name' => 'Finance Division']);
 
         $this->actingAs($admin)->post(route('departments.store'), [
             'name' => 'Finance',
-            'division_id' => $division->id,
+            'division' => 'Finance Division',
         ])->assertRedirect(route('users.index'));
 
         $department = Department::where('name', 'Finance')->firstOrFail();
         $this->assertSame($division->id, $department->division_id);
+    }
+
+    public function test_matching_an_existing_division_name_is_case_insensitive(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin', 'is_active' => true]);
+        $division = Division::factory()->create(['name' => 'Finance Division']);
+
+        $this->actingAs($admin)->post(route('departments.store'), [
+            'name' => 'Finance',
+            'division' => 'finance division',
+        ]);
+
+        $department = Department::where('name', 'Finance')->firstOrFail();
+        $this->assertSame($division->id, $department->division_id);
+        $this->assertSame(1, Division::count()); // reused, not duplicated
+    }
+
+    public function test_typing_a_division_name_that_does_not_exist_creates_one(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin', 'is_active' => true]);
+
+        $this->actingAs($admin)->post(route('departments.store'), [
+            'name' => 'Logistics',
+            'division' => 'Brand New Division',
+        ]);
+
+        $department = Department::where('name', 'Logistics')->firstOrFail();
+        $division = Division::where('name', 'Brand New Division')->firstOrFail();
+
+        $this->assertSame($division->id, $department->division_id);
+        $this->assertSame(Member::MEMBER_TYPE_EMPLOYEE, $division->member_type);
     }
 
     public function test_a_department_can_be_added_without_a_division(): void
@@ -60,20 +91,34 @@ class DepartmentManagementTest extends TestCase
         $this->assertDatabaseMissing('departments', ['name' => 'Should Not Work']);
     }
 
-    public function test_an_admin_can_edit_a_department(): void
+    public function test_an_admin_can_edit_a_department_and_change_its_division_by_name(): void
     {
         $admin = User::factory()->create(['role' => 'admin', 'is_active' => true]);
         $department = Department::factory()->create(['name' => 'Old Name']);
-        $division = Division::factory()->create();
+        $division = Division::factory()->create(['name' => 'New Division']);
 
         $this->actingAs($admin)->put(route('departments.update', $department), [
             'name' => 'New Name',
-            'division_id' => $division->id,
+            'division' => 'New Division',
         ])->assertRedirect(route('users.index'));
 
         $department->refresh();
         $this->assertSame('New Name', $department->name);
         $this->assertSame($division->id, $department->division_id);
+    }
+
+    public function test_clearing_the_division_field_on_edit_unassigns_it(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin', 'is_active' => true]);
+        $division = Division::factory()->create();
+        $department = Department::factory()->create(['division_id' => $division->id]);
+
+        $this->actingAs($admin)->put(route('departments.update', $department), [
+            'name' => $department->name,
+            'division' => '',
+        ]);
+
+        $this->assertNull($department->fresh()->division_id);
     }
 
     public function test_deleting_a_department_unassigns_its_members_instead_of_deleting_them(): void

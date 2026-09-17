@@ -3,7 +3,6 @@
 namespace App\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
-use Illuminate\Validation\Rule;
 
 class StoreDepartmentRequest extends FormRequest
 {
@@ -16,7 +15,10 @@ class StoreDepartmentRequest extends FormRequest
     {
         return [
             'name' => ['required', 'string', 'max:255', 'unique:departments,name'],
-            'division_id' => ['nullable', Rule::exists('divisions', 'id')],
+            // Free-text division name, not a division_id select anymore —
+            // DepartmentController resolves this to an existing Division by
+            // name (case-insensitive) or creates one if it doesn't exist yet.
+            'division' => ['nullable', 'string', 'max:255'],
         ];
     }
 }

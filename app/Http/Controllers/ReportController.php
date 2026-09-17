@@ -13,6 +13,7 @@ use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Collection;
 use Illuminate\View\View;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class ReportController extends Controller
 {
@@ -87,7 +88,7 @@ class ReportController extends Controller
         return $pdf->download('annual-ghp-report-'.($year ?: 'latest').'.pdf');
     }
 
-    public function annualGhpCsv(Request $request): Response
+    public function annualGhpCsv(Request $request): StreamedResponse
     {
         $rows = $this->buildAnnualGhpRows($request);
         $year = $request->query('year');
@@ -156,7 +157,7 @@ class ReportController extends Controller
         return $pdf->download('reimbursement-report-'.$request->query('from').'-to-'.$request->query('to').'.pdf');
     }
 
-    public function reimbursementsCsv(Request $request): Response
+    public function reimbursementsCsv(Request $request): StreamedResponse
     {
         $reimbursements = $this->buildReimbursementsQuery($request);
 

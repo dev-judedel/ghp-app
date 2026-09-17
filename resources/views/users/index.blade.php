@@ -103,7 +103,7 @@
                             <td>{{ $department->division->name ?? '—' }}</td>
                             <td style="white-space: nowrap;">
                                 <button type="button" class="btn btn-ghost" style="padding: 4px 10px; font-size: 12px;"
-                                    onclick="openEditDepartment({{ $department->id }}, {{ json_encode($department->name) }}, {{ json_encode($department->division_id) }})">
+                                    onclick="openEditDepartment({{ $department->id }}, {{ json_encode($department->name) }}, {{ json_encode($department->division->name ?? '') }})">
                                     Edit
                                 </button>
                                 <form method="POST" action="{{ route('departments.destroy', $department) }}" style="display: inline;"
@@ -244,15 +244,14 @@
                 </div>
 
                 <div class="field" style="margin-bottom: 0;">
-                    <label for="department_division_id">Division</label>
-                    <select id="department_division_id" name="division_id">
-                        <option value="">— None —</option>
+                    <label for="department_division">Division</label>
+                    <input type="text" id="department_division" name="division" list="division-options" value="{{ old('division') }}" placeholder="Type a division name, or leave blank">
+                    <datalist id="division-options">
                         @foreach ($divisions as $division)
-                            <option value="{{ $division->id }}" @selected(old('division_id') == $division->id)>
-                                {{ $division->name }} ({{ $division->member_type === \App\Models\Member::MEMBER_TYPE_AGENT ? 'Agent' : 'Employee' }})
-                            </option>
+                            <option value="{{ $division->name }}">
                         @endforeach
-                    </select>
+                    </datalist>
+                    <p class="hint" style="margin-top: 4px;">Existing names show as suggestions as you type. A name that doesn't match anything creates a new division automatically (as an Employee division — there's no way to set Agent from this field yet).</p>
                 </div>
             </div>
 
@@ -273,17 +272,17 @@
             document.getElementById('departmentFormMethod').value = 'POST';
             document.getElementById('departmentFormSubmit').textContent = 'Save department';
             document.getElementById('department_name').value = '';
-            document.getElementById('department_division_id').value = '';
+            document.getElementById('department_division').value = '';
             departmentModal.showModal();
         }
 
-        function openEditDepartment(id, name, divisionId) {
+        function openEditDepartment(id, name, divisionName) {
             document.getElementById('departmentModalTitle').textContent = 'Edit department';
             document.getElementById('departmentForm').action = departmentUpdateUrlBase + '/' + id;
             document.getElementById('departmentFormMethod').value = 'PUT';
             document.getElementById('departmentFormSubmit').textContent = 'Update department';
             document.getElementById('department_name').value = name;
-            document.getElementById('department_division_id').value = divisionId || '';
+            document.getElementById('department_division').value = divisionName || '';
             departmentModal.showModal();
         }
 
