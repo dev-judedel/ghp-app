@@ -42,4 +42,11 @@ class ReportExportTest extends TestCase
         $response->assertOk();
         $response->assertHeader('content-type', 'text/csv; charset=UTF-8');
     }
+
+    public function test_the_reports_index_page_loads_without_a_sql_error(): void
+    {
+        $user = User::factory()->create(['is_active' => true]);
+
+        $this->actingAs($user)->get(route('reports.index'))->assertOk();
+    }
 }

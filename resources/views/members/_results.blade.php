@@ -64,7 +64,7 @@
                             <td class="num amount">&#8369;{{ number_format($member->ghp_amount, 2) }}</td>
                             <td style="white-space: nowrap;">
                                 <button type="button" class="btn btn-ghost" style="padding: 4px 10px; font-size: 12px; {{ $member->is_active ? '' : 'color: var(--success);' }}"
-                                    onclick="submitMemberStatus({{ $member->id }}, {{ $member->is_active ? 'true' : 'false' }}, {{ json_encode($member->code) }})">
+                                    onclick="submitMemberStatus({{ $member->id }}, {{ $member->is_active ? 'true' : 'false' }}, {{ json_encode($member->code) }}, {{ json_encode($member->full_name) }})">
                                     {{ $member->is_active ? 'Deactivate' : 'Reactivate' }}
                                 </button>
                             </td>

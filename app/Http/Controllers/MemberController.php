@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Requests\StoreMemberRequest;
 use App\Http\Requests\UpdateMemberRequest;
+use App\Http\Requests\UpdateMemberStatusRequest;
 use App\Models\Department;
 use App\Models\Division;
 use App\Models\Member;
@@ -134,14 +135,22 @@ class MemberController extends Controller
      * column on the table. Separate from the bulk activate/deactivate in
      * MemberBulkActionController, which acts on multiple checked members
      * at once; this always affects exactly the one $member passed in.
+     *
+     * Deactivating requires a resignation_date (validated server-side by
+     * UpdateMemberStatusRequest — the date shown to the admin in the modal
+     * is never trusted as-is without that validation). Reactivating always
+     * clears it back to NULL, regardless of what (if anything) was submitted.
      */
-    public function updateStatus(Request $request, Member $member): RedirectResponse
+    public function updateStatus(UpdateMemberStatusRequest $request, Member $member): RedirectResponse
     {
         abort_unless(auth()->user()->isAdmin(), 403);
 
         $activating = ! $member->is_active;
 
-        $member->update(['is_active' => $activating]);
+        $member->update([
+            'is_active' => $activating,
+            'resignation_date' => $activating ? null : $request->validated('resignation_date'),
+        ]);
 
         return redirect()
             ->route('members.index', $request->only(['search', 'type', 'department', 'division', 'status']))

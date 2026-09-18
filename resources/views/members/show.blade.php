@@ -55,8 +55,13 @@
                 <tr>
                     <th>Deduction start</th>
                     <td>{{ optional($member->deduction_start_date)->format('M d, Y') ?? '—' }}</td>
-                    <th></th>
-                    <td></td>
+                    @if (! $member->is_active && $member->resignation_date)
+                        <th>Resignation date</th>
+                        <td>{{ $member->resignation_date->format('F d, Y') }}</td>
+                    @else
+                        <th></th>
+                        <td></td>
+                    @endif
                 </tr>
                 @if ($member->address)
                     <tr>

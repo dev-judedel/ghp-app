@@ -18,6 +18,7 @@ use Spatie\Activitylog\Traits\LogsActivity;
     'code', 'email', 'member_type', 'last_name', 'first_name', 'middle_name', 'address',
     'birthdate', 'civil_status', 'apply_date', 'deduction_start_date', 'ghp_amount',
     'ghp_amount_is_manual', 'remarks', 'division_id', 'department_id', 'old_code', 'is_active',
+    'resignation_date',
 ])]
 class Member extends Model
 {
@@ -47,6 +48,7 @@ class Member extends Model
             'ghp_amount' => 'decimal:2',
             'ghp_amount_is_manual' => 'boolean',
             'is_active' => 'boolean',
+            'resignation_date' => 'date',
         ];
     }
 
@@ -169,6 +171,7 @@ class Member extends Model
                 'code', 'email', 'member_type', 'last_name', 'first_name', 'middle_name', 'address',
                 'birthdate', 'civil_status', 'apply_date', 'deduction_start_date', 'ghp_amount',
                 'ghp_amount_is_manual', 'division_id', 'department_id', 'old_code', 'is_active',
+                'resignation_date',
             ])
             ->logOnlyDirty()
             ->dontSubmitEmptyLogs();

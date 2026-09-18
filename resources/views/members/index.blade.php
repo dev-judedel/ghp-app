@@ -330,6 +330,50 @@
         </dialog>
     @endif
 
+    {{-- Deactivate member modal: requires a resignation/deactivation date
+         before the confirm button does anything. Shared by every row's
+         Deactivate button — populated dynamically via JS rather than one
+         dialog per member. Not a <form> that posts directly; the actual
+         submission happens through submitMemberStatusForm() in the script
+         below, consistent with how the row action itself already avoids a
+         literal <form> to sidestep the nested-form issue. --}}
+    @if (auth()->user()->isAdmin())
+        <dialog id="deactivateMemberModal" class="modal">
+            <div class="modal-head">
+                <h2>Deactivate member</h2>
+                <button type="button" class="modal-close" onclick="deactivateMemberModal.close()" aria-label="Close">&times;</button>
+            </div>
+
+            <div class="modal-body">
+                <input type="hidden" id="deactivate_member_id">
+
+                <table style="margin-bottom: 16px;">
+                    <tbody>
+                        <tr>
+                            <th style="width: 90px;">Member</th>
+                            <td id="deactivate_member_name"></td>
+                        </tr>
+                        <tr>
+                            <th>Code</th>
+                            <td class="code" id="deactivate_member_code"></td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="field" style="margin-bottom: 0;">
+                    <label for="deactivate_resignation_date">Resignation / Deactivation date</label>
+                    <input type="date" id="deactivate_resignation_date" required>
+                    <p class="hint">This date will be recorded as the member's resignation/deactivation date.</p>
+                </div>
+            </div>
+
+            <div class="modal-foot">
+                <button type="button" class="btn btn-ghost" onclick="deactivateMemberModal.close()">Cancel</button>
+                <button type="button" class="btn btn-primary" style="background: var(--danger);" onclick="confirmDeactivateMember()">Confirm Deactivation</button>
+            </div>
+        </dialog>
+    @endif
+
     <div class="card" id="members-results">
         @include('members._results')
     </div>
@@ -394,14 +438,53 @@
              * browsers silently drop the inner tag and merge its inputs into
              * the outer form, so submitting it here would have gone to
              * members.bulk-action instead of members.update-status.
+             *
+             * Reactivating stays a simple confirm() + immediate submit, same
+             * as before. Deactivating now opens a modal instead — a
+             * resignation/deactivation date is required and the server
+             * enforces that (UpdateMemberStatusRequest), so this can't be
+             * skipped by submitting without one.
              */
-            function submitMemberStatus(memberId, isActive, code) {
-                const verb = isActive ? 'Deactivate' : 'Reactivate';
-
-                if (! confirm(`${verb} ${code}?`)) {
+            function submitMemberStatus(memberId, isActive, code, name) {
+                if (isActive) {
+                    openDeactivateMemberModal(memberId, code, name);
                     return;
                 }
 
+                if (! confirm(`Reactivate ${code}?`)) {
+                    return;
+                }
+
+                submitMemberStatusForm(memberId, {});
+            }
+
+            function openDeactivateMemberModal(memberId, code, name) {
+                document.getElementById('deactivate_member_id').value = memberId;
+                document.getElementById('deactivate_member_name').textContent = name;
+                document.getElementById('deactivate_member_code').textContent = code;
+                document.getElementById('deactivate_resignation_date').value = '';
+                deactivateMemberModal.showModal();
+            }
+
+            function confirmDeactivateMember() {
+                const memberId = document.getElementById('deactivate_member_id').value;
+                const date = document.getElementById('deactivate_resignation_date').value;
+
+                // The date input already has the `required` attribute, which
+                // blocks submission in every modern browser — this is just a
+                // belt-and-suspenders check for older/unusual browsers. Real
+                // enforcement is server-side (UpdateMemberStatusRequest),
+                // never trusting whatever the browser sends.
+                if (! date) {
+                    alert('Please select a resignation/deactivation date.');
+                    return;
+                }
+
+                submitMemberStatusForm(memberId, { resignation_date: date });
+                deactivateMemberModal.close();
+            }
+
+            function submitMemberStatusForm(memberId, extraFields) {
                 const form = document.createElement('form');
                 form.method = 'POST';
                 form.action = memberStatusUrlBase + '/' + memberId + '/status';
@@ -415,12 +498,13 @@
                     department: @json($departmentId),
                     division: @json($divisionId),
                     status: @json($status),
+                    ...extraFields,
                 };
 
-                for (const [name, value] of Object.entries(fields)) {
+                for (const [fieldName, value] of Object.entries(fields)) {
                     const input = document.createElement('input');
                     input.type = 'hidden';
-                    input.name = name;
+                    input.name = fieldName;
                     input.value = value ?? '';
                     form.appendChild(input);
                 }

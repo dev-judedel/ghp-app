@@ -21,10 +21,19 @@ class ReportController extends Controller
 
     public function index(): View
     {
+        // Plain Eloquent instead of raw SQL on purpose: the previous version
+        // used EXTRACT(YEAR FROM from_date)::int, which is PostgreSQL-only
+        // syntax (the '::int' cast doesn't exist in MySQL/SQLite) — this app
+        // runs on MySQL, so GET /reports has been throwing a SQL syntax
+        // error on every load. Same class of bug as the earlier member
+        // search 'ilike' issue. This version works on any driver.
         $coverageYears = BenefitPeriod::query()
-            ->selectRaw('DISTINCT EXTRACT(YEAR FROM from_date)::int as year')
-            ->orderByDesc('year')
-            ->pluck('year');
+            ->select('from_date')
+            ->get()
+            ->map(fn ($period) => $period->from_date->year)
+            ->unique()
+            ->sortDesc()
+            ->values();
 
         return view('reports.index', [
             'departments' => Department::orderBy('name')->get(),
