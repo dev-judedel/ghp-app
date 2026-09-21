@@ -231,19 +231,29 @@
                     <h3 style="margin: 18px 0 10px;">Benefit setup</h3>
                     <div style="display: flex; gap: 12px;">
                         <div class="field" style="flex: 1;">
-                            <label for="apply_date">Apply date</label>
-                            <input type="date" id="apply_date" name="apply_date" value="{{ old('apply_date') }}">
+                            <label for="apply_date">GHP apply date <span class="error">*</span></label>
+                            <input type="date" id="apply_date" name="apply_date" value="{{ old('apply_date', $defaultApplyDate->toDateString()) }}" required>
+                            <p class="hint" style="margin-top: 4px;">Defaults to the current GHP cycle's start date — editable if needed.</p>
                         </div>
                         <div class="field" style="flex: 1;">
-                            <label for="deduction_start_date">Deduction start</label>
-                            <input type="date" id="deduction_start_date" name="deduction_start_date" value="{{ old('deduction_start_date') }}">
+                            <label for="start_date">Member start date <span class="error">*</span></label>
+                            <input type="date" id="start_date" name="start_date" value="{{ old('start_date', now()->toDateString()) }}" required oninput="updateDeductionPreview()">
+                            <p class="hint" style="margin-top: 4px;">When the member started/was added — kept separate from Apply Date.</p>
                         </div>
                         <div class="field" style="flex: 1;">
                             <label for="ghp_amount">GHP amount</label>
                             <input type="number" id="ghp_amount" name="ghp_amount" value="{{ old('ghp_amount', 3600) }}" step="0.01" min="0" required>
                         </div>
                     </div>
-                    <p class="hint" style="margin-top: -8px; margin-bottom: 12px;">Deduction start date is required before a benefit period can be generated. Base amount is ₱3,600; ₱4,200 if the member has an eligible dependent (add dependents after saving).</p>
+
+                    <div class="field">
+                        <p class="hint" style="margin: 0;">
+                            First deduction date: <strong id="deduction_preview">&mdash;</strong>
+                            &nbsp;&middot;&nbsp;
+                            GHP cycle: <strong>{{ $currentCycleStart->format('M d, Y') }} &ndash; {{ $currentCycleEnd->format('M d, Y') }}</strong>
+                        </p>
+                        <p class="hint" style="margin-top: 2px;">The first deduction always falls on the 1st of the month after the start date above — the start month itself is never deducted. Calculated automatically, not directly editable. Base GHP amount is ₱3,600; ₱4,200 if the member has an eligible dependent (add dependents after saving).</p>
+                    </div>
 
                     <div class="field" style="margin-bottom: 0;">
                         <label for="remarks">Remarks</label>
@@ -512,6 +522,29 @@
                 document.body.appendChild(form);
                 form.submit();
             }
+
+            /**
+             * Live preview only — mirrors BenefitAccrualService::
+             * resolveDeductionStartDate() in JS purely so the admin sees
+             * the computed date update as they pick a start date. The
+             * server recomputes this itself from start_date on submit and
+             * never trusts whatever the client displays or would send.
+             */
+            function updateDeductionPreview() {
+                const startInput = document.getElementById('start_date');
+                const preview = document.getElementById('deduction_preview');
+
+                if (! startInput || ! startInput.value || ! preview) {
+                    return;
+                }
+
+                const start = new Date(startInput.value + 'T00:00:00');
+                const deduction = new Date(start.getFullYear(), start.getMonth() + 1, 1);
+
+                preview.textContent = deduction.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+            }
+
+            updateDeductionPreview();
 
             @if ($hasMemberCreationErrors)
                 showAddMemberTab('single');

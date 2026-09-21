@@ -15,7 +15,7 @@ use Illuminate\View\View;
 
 class MemberController extends Controller
 {
-    public function index(Request $request): View
+    public function index(Request $request, BenefitAccrualService $accrualService): View
     {
         $search = trim((string) $request->query('search', ''));
         $type = $request->query('type');           // 'employee' | 'agent' | null
@@ -36,6 +36,14 @@ class MemberController extends Controller
             ->paginate(25)
             ->withQueryString();
 
+        // Default Apply Date for the Add Member modal: the CURRENT GHP
+        // cycle's own start date, computed dynamically (never hard-coded to
+        // one year) via the same coveragePeriod() logic everything else in
+        // this app uses. Employee cycle (Apr–Mar) is used as the default
+        // regardless of which member type ends up selected in the form —
+        // it's just a suggested starting value, and stays fully editable.
+        [$currentCycleStart, $currentCycleEnd] = $accrualService->coveragePeriod(Member::MEMBER_TYPE_EMPLOYEE, now());
+
         $viewData = [
             'members' => $members,
             'search' => $search,
@@ -45,6 +53,9 @@ class MemberController extends Controller
             'status' => $status,
             'departments' => Department::orderBy('name')->get(),
             'divisions' => Division::orderBy('member_type')->orderBy('name')->get(),
+            'defaultApplyDate' => $currentCycleStart,
+            'currentCycleStart' => $currentCycleStart,
+            'currentCycleEnd' => $currentCycleEnd,
         ];
 
         // Live search: the search box fires these requests as the user types
@@ -58,7 +69,7 @@ class MemberController extends Controller
         return view('members.index', $viewData);
     }
 
-    public function store(StoreMemberRequest $request): RedirectResponse
+    public function store(StoreMemberRequest $request, BenefitAccrualService $accrualService): RedirectResponse
     {
         // Built as a mutable array (not $validated + [...]) on purpose:
         // 'code' is now a validated key too, and array union (+) keeps the
@@ -67,6 +78,11 @@ class MemberController extends Controller
         $data = $request->validated();
         $data['code'] = $request->filled('code') ? $data['code'] : Member::generateUniqueCode();
         $data['is_active'] = $request->boolean('is_active', true);
+        // deduction_start_date is never accepted from the request (see
+        // StoreMemberRequest) — always derived from start_date, so it can
+        // never drift from the business rule regardless of what a client
+        // might try to submit.
+        $data['deduction_start_date'] = $accrualService->resolveDeductionStartDate($data['start_date']);
 
         $member = Member::create($data);
 
@@ -75,7 +91,7 @@ class MemberController extends Controller
             ->with('status', "Member {$member->code} created.");
     }
 
-    public function show(Member $member): View
+    public function show(Member $member, BenefitAccrualService $accrualService): View
     {
         $member->load([
             'division',
@@ -88,12 +104,17 @@ class MemberController extends Controller
 
         $currentBenefitPeriod = $member->benefitPeriods->first();
 
+        [$currentCycleStart, $currentCycleEnd] = $accrualService->coveragePeriod($member->member_type, now());
+
         return view('members.show', [
             'member' => $member,
             'currentBenefitPeriod' => $currentBenefitPeriod,
             'departments' => Department::orderBy('name')->get(),
             'divisions' => Division::orderBy('member_type')->orderBy('name')->get(),
             'activityFeed' => $this->buildMemberActivityFeed($member),
+            'currentCycleStart' => $currentCycleStart,
+            'currentCycleEnd' => $currentCycleEnd,
+            'requiredGhp' => $member->deduction_start_date ? $accrualService->requiredAmountForCycle($member) : null,
         ]);
     }
 
@@ -119,10 +140,11 @@ class MemberController extends Controller
         return $activities->sortByDesc('created_at')->take(30)->values();
     }
 
-    public function update(UpdateMemberRequest $request, Member $member): RedirectResponse
+    public function update(UpdateMemberRequest $request, Member $member, BenefitAccrualService $accrualService): RedirectResponse
     {
         $member->update($request->validated() + [
             'is_active' => $request->boolean('is_active', false),
+            'deduction_start_date' => $accrualService->resolveDeductionStartDate($request->validated('start_date')),
         ]);
 
         return redirect()

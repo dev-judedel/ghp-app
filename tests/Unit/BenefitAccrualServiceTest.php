@@ -161,4 +161,55 @@ class BenefitAccrualServiceTest extends TestCase
     {
         $this->assertSame(0.0, $this->service->carryForward(null));
     }
+
+    /**
+     * Walks through the exact scenario described when the apply/deduction
+     * date requirement was added: an Employee (Apr 1–Mar 31 coverage year)
+     * joining mid-year, after the 15th, so the enrollment month itself
+     * doesn't count (see the per-month cutoff tests above). Base ₱3,600/yr
+     * (₱300/mo) with no dependents, joined June 20, 2026 → April, May,
+     * and June (the enrollment month, since day > 15) don't count — only
+     * July through March (9 months) do: ₱300 × 9 = ₱2,700.
+     */
+    public function test_mid_year_enrollment_after_the_15th_prorates_to_nine_months(): void
+    {
+        $member = Member::factory()->create([
+            'member_type' => Member::MEMBER_TYPE_EMPLOYEE,
+            'deduction_start_date' => Carbon::parse('2026-06-20'),
+            'ghp_amount' => 3600,
+            'ghp_amount_is_manual' => false,
+        ]);
+
+        $result = $this->service->calculate($member->fresh(['dependents', 'reimbursements', 'benefitPeriods']), Carbon::parse('2027-03-31'));
+
+        $this->assertSame(3600.0, $result['ghp_amount']);
+        $this->assertSame(9, $result['months_accrued']);
+        $this->assertSame(2700.0, $result['accrued']);
+    }
+
+    /**
+     * Same scenario, but the member has an eligible dependent — the base
+     * amount used for proration should switch to ₱4,200/yr (₱350/mo)
+     * automatically: ₱350 × 9 = ₱3,150.
+     */
+    public function test_mid_year_enrollment_with_a_dependent_prorates_from_the_higher_base(): void
+    {
+        $member = Member::factory()->create([
+            'member_type' => Member::MEMBER_TYPE_EMPLOYEE,
+            'deduction_start_date' => Carbon::parse('2026-06-20'),
+            'ghp_amount' => 3600,
+            'ghp_amount_is_manual' => false,
+        ]);
+
+        Dependent::factory()->for($member)->create([
+            'relation' => 'Spouse',
+            'birthdate' => Carbon::now()->subYears(30),
+        ]);
+
+        $result = $this->service->calculate($member->fresh(['dependents', 'reimbursements', 'benefitPeriods']), Carbon::parse('2027-03-31'));
+
+        $this->assertSame(4200.0, $result['ghp_amount']);
+        $this->assertSame(9, $result['months_accrued']);
+        $this->assertSame(3150.0, $result['accrued']);
+    }
 }

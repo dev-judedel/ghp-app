@@ -25,6 +25,7 @@ class MemberFactory extends Factory
             'birthdate' => $this->faker->dateTimeBetween('-60 years', '-22 years'),
             'civil_status' => $this->faker->randomElement([Member::CIVIL_STATUS_SINGLE, Member::CIVIL_STATUS_MARRIED]),
             'apply_date' => $this->faker->dateTimeBetween('-10 years', 'now'),
+            'start_date' => $this->faker->dateTimeBetween('-10 years', 'now'),
             'deduction_start_date' => $this->faker->dateTimeBetween('-10 years', 'now'),
             'ghp_amount' => 3600,
             'remarks' => null,

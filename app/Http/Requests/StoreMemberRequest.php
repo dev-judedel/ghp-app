@@ -30,8 +30,12 @@ class StoreMemberRequest extends FormRequest
             'address' => ['nullable', 'string', 'max:500'],
             'birthdate' => ['nullable', 'date'],
             'civil_status' => ['nullable', 'in:0,1'],
-            'apply_date' => ['nullable', 'date'],
-            'deduction_start_date' => ['nullable', 'date'],
+            'apply_date' => ['required', 'date'],
+            'start_date' => ['required', 'date'],
+            // No 'deduction_start_date' rule — it's always computed
+            // server-side from start_date (see MemberController::store()
+            // and BenefitAccrualService::resolveDeductionStartDate()),
+            // never accepted directly from the request.
             'ghp_amount' => ['required', 'numeric', 'min:0'],
             'division_id' => ['nullable', 'exists:divisions,id'],
             'department_id' => ['nullable', 'exists:departments,id'],

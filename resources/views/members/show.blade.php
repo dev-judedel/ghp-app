@@ -122,6 +122,30 @@
                 <p>This member has no imported or generated coverage period yet.</p>
             </div>
         @endif
+
+        @if ($requiredGhp)
+            <div class="ledger-strip" style="margin-top: 10px;">
+                <div class="ledger-row">
+                    <span class="label">GHP monthly amount</span>
+                    <span class="amount ledger">&#8369;{{ number_format($requiredGhp['monthly_rate'], 2) }}</span>
+                </div>
+                <div class="ledger-row">
+                    <span class="label">Applicable months (this cycle)</span>
+                    <span class="amount ledger">{{ $requiredGhp['applicable_months'] }}</span>
+                </div>
+                <div class="ledger-row total">
+                    <span class="label">Required GHP amount</span>
+                    <span class="amount ledger">&#8369;{{ number_format($requiredGhp['required_amount'], 2) }}</span>
+                </div>
+            </div>
+            <p class="hint" style="margin-top: 8px; margin-bottom: 0;">
+                Apply date: {{ optional($member->apply_date)->format('F Y') ?? '—' }}
+                &nbsp;&middot;&nbsp;
+                Start date: {{ optional($member->start_date)->format('F Y') ?? '—' }}
+                &nbsp;&middot;&nbsp;
+                First deduction: {{ optional($member->deduction_start_date)->format('F Y') ?? '—' }}
+            </p>
+        @endif
     </div>
 
     <div class="card">
@@ -757,15 +781,22 @@
                     <h3 style="margin: 18px 0 10px;">Benefit setup</h3>
                     <div style="display: flex; gap: 12px;">
                         <div class="field" style="flex: 1;">
-                            <label for="edit_apply_date">Apply date</label>
-                            <input type="date" id="edit_apply_date" name="apply_date" value="{{ old('apply_date', optional($member->apply_date)->toDateString()) }}">
+                            <label for="edit_apply_date">GHP apply date <span class="error">*</span></label>
+                            <input type="date" id="edit_apply_date" name="apply_date" value="{{ old('apply_date', optional($member->apply_date)->toDateString()) }}" required>
                         </div>
                         <div class="field" style="flex: 1;">
-                            <label for="edit_deduction_start_date">Deduction start</label>
-                            <input type="date" id="edit_deduction_start_date" name="deduction_start_date" value="{{ old('deduction_start_date', optional($member->deduction_start_date)->toDateString()) }}">
+                            <label for="edit_start_date">Member start date <span class="error">*</span></label>
+                            <input type="date" id="edit_start_date" name="start_date" value="{{ old('start_date', optional($member->start_date)->toDateString()) }}" required oninput="updateEditDeductionPreview()">
                         </div>
                     </div>
-                    <p class="hint" style="margin-top: -8px; margin-bottom: 12px;">GHP amount (currently &#8369;{{ number_format($member->ghp_amount, 2) }}{{ $member->ghp_amount_is_manual ? ', manual override' : ', automatic' }}) isn't edited here — use "Adjust GHP amount" on the Benefit balance card above.</p>
+                    <p class="hint" style="margin-top: -8px; margin-bottom: 12px;">
+                        First deduction date: <strong id="edit_deduction_preview">{{ optional($member->deduction_start_date)->format('F d, Y') ?? '—' }}</strong>
+                        (auto-calculated: the 1st of the month after Start Date, never the start month itself — not directly editable)
+                        &nbsp;&middot;&nbsp;
+                        GHP cycle: <strong>{{ $currentCycleStart->format('M d, Y') }} &ndash; {{ $currentCycleEnd->format('M d, Y') }}</strong>
+                        <br>
+                        GHP amount (currently &#8369;{{ number_format($member->ghp_amount, 2) }}{{ $member->ghp_amount_is_manual ? ', manual override' : ', automatic' }}) isn't edited here — use "Adjust GHP amount" on the Benefit balance card above.
+                    </p>
 
                     <div class="field" style="margin-bottom: 0;">
                         <label for="edit_remarks">Remarks</label>
@@ -783,5 +814,23 @@
         @if ($hasMemberEditErrors)
             <script>editMemberModal.showModal();</script>
         @endif
+
+        <script>
+            // Same live-preview mirror as the Add Member modal (see
+            // members/index.blade.php) — display only, server is authoritative.
+            function updateEditDeductionPreview() {
+                const startInput = document.getElementById('edit_start_date');
+                const preview = document.getElementById('edit_deduction_preview');
+
+                if (! startInput || ! startInput.value || ! preview) {
+                    return;
+                }
+
+                const start = new Date(startInput.value + 'T00:00:00');
+                const deduction = new Date(start.getFullYear(), start.getMonth() + 1, 1);
+
+                preview.textContent = deduction.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+            }
+        </script>
     @endif
 @endsection

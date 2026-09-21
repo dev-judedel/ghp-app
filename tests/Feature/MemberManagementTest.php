@@ -22,6 +22,8 @@ class MemberManagementTest extends TestCase
             'member_type' => '0',
             'last_name' => 'Dela Cruz',
             'first_name' => 'Juan',
+            'apply_date' => '2026-04-01',
+            'start_date' => '2026-06-01',
             'ghp_amount' => 3600,
         ], $overrides);
     }
@@ -92,6 +94,50 @@ class MemberManagementTest extends TestCase
             ->assertSessionHasErrors('email');
     }
 
+    public function test_apply_date_is_required_when_creating_a_member(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin', 'is_active' => true]);
+
+        $payload = $this->validMemberPayload();
+        unset($payload['apply_date']);
+
+        $this->actingAs($admin)
+            ->post(route('members.store'), $payload)
+            ->assertSessionHasErrors('apply_date');
+
+        $this->assertDatabaseMissing('members', ['email' => 'juan@example.test']);
+    }
+
+    public function test_start_date_is_required_when_creating_a_member(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin', 'is_active' => true]);
+
+        $payload = $this->validMemberPayload();
+        unset($payload['start_date']);
+
+        $this->actingAs($admin)
+            ->post(route('members.store'), $payload)
+            ->assertSessionHasErrors('start_date');
+
+        $this->assertDatabaseMissing('members', ['email' => 'juan@example.test']);
+    }
+
+    public function test_apply_date_and_start_date_are_required_when_editing_a_member(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin', 'is_active' => true]);
+        $member = Member::factory()->create();
+
+        $this->actingAs($admin)
+            ->put(route('members.update', $member), [
+                'code' => $member->code,
+                'member_type' => '0',
+                'last_name' => $member->last_name,
+                'first_name' => $member->first_name,
+                // apply_date / start_date omitted
+            ])
+            ->assertSessionHasErrors(['apply_date', 'start_date']);
+    }
+
     public function test_duplicate_member_email_is_rejected(): void
     {
         $admin = User::factory()->create(['role' => 'admin', 'is_active' => true]);
@@ -108,7 +154,7 @@ class MemberManagementTest extends TestCase
         $member = Member::factory()->create(['is_active' => true]);
 
         $this->actingAs($admin)
-            ->patch(route('members.update-status', $member))
+            ->patch(route('members.update-status', $member), ['resignation_date' => '2026-09-18'])
             ->assertRedirect();
 
         $this->assertFalse($member->fresh()->is_active);
@@ -160,7 +206,7 @@ class MemberManagementTest extends TestCase
         $target = Member::factory()->create(['is_active' => true]);
         $other = Member::factory()->create(['is_active' => true]);
 
-        $this->actingAs($admin)->patch(route('members.update-status', $target));
+        $this->actingAs($admin)->patch(route('members.update-status', $target), ['resignation_date' => '2026-09-18']);
 
         $this->assertFalse($target->fresh()->is_active);
         $this->assertTrue($other->fresh()->is_active); // untouched by the individual action

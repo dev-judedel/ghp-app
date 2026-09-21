@@ -5,7 +5,7 @@ Use this as a quick reference before starting new work — check "Not Implemente
 before assuming something doesn't exist, and check "Known Issues" before
 re-diagnosing a problem that's already been flagged.
 
-**Last updated:** 2026-09-17
+**Last updated:** 2026-09-18
 
 ---
 
@@ -63,6 +63,14 @@ for Excel export — is no longer needed; that feature was built and then remove
 - Found **already fully built** during inspection (not new work this session): `DepartmentController`, `StoreDepartmentRequest`/`UpdateDepartmentRequest`, routes, the `departments.division_id` migration, and the "Department Management" card on the Users page (ID / Department / Division / Action with Edit + Delete-with-confirm).
 - Verified the Members page's Division/Department dropdowns already auto-populate from live queries — no extra work needed for a newly added department to appear there.
 - **Tests added this session:** `DepartmentManagementTest.php` (was previously untested).
+
+### 2.7a Bug fix — apply date / deduction start date were not required
+- `StoreMemberRequest`/`UpdateMemberRequest` had both as `nullable`, and the Add/Edit Member forms had no `required` attribute — a member could be saved with neither date set, which silently breaks benefit-period generation later (`MemberController::generateBenefitPeriod()` already refused to run without `deduction_start_date`, but nothing stopped you from getting into that state).
+- Changed both fields to `required` in both Form Requests, and added `required` + a visible `*` to both date inputs on `members/create.blade.php` and the edit-member modal on `members/show.blade.php`.
+- Note: this now also applies when *editing* an existing member — a legacy member saved before these fields existed (e.g. via CSV import, which is a separate code path and is unaffected by this change) will need both dates filled in the first time anyone edits them, even for an unrelated field change like fixing a typo'd name.
+- The GHP-amount business rules you'd expect alongside this (₱300/mo single → ₱3,600/yr, ₱350/mo with an eligible dependent → ₱4,200/yr, recalculated automatically whenever a dependent is added/edited/removed, and pro-rated by month from `deduction_start_date` within the Apr–Mar/Jun–May coverage year) were already fully implemented in `BenefitAccrualService` — no changes needed there.
+- **Tests:** `MemberManagementTest.php` (apply_date/deduction_start_date required on create and update), `BenefitAccrualServiceTest.php` (proration regression case)
+- **Unrelated pre-existing bug found while running the suite:** two `MemberManagementTest` tests (`test_an_admin_can_deactivate_an_active_member`, `test_individual_row_action_only_affects_the_one_member`) called the deactivate endpoint without a `resignation_date`, but `UpdateMemberStatusRequest` requires one when deactivating an active member (see 2.5/`MemberDeactivationTest`) — those tests were never updated when that rule was added, so they were failing (asserting the member deactivated when validation had actually rejected the request). Fixed by sending `resignation_date` in both.
 
 ### 2.7 Removed (per explicit request)
 - **Member export (CSV/PDF/Excel)**: was built in full, then removed at your request. Routes, view buttons, and the controller/PDF view were deleted from active use — the controller and PDF view are sitting in `_removed-by-claude/` at the project root (I can't truly delete files, only move/overwrite them; delete that folder yourself whenever convenient).

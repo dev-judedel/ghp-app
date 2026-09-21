@@ -121,13 +121,14 @@
 
             <div style="display: flex; gap: 16px;">
                 <div class="field" style="flex: 1;">
-                    <label for="apply_date">Apply date</label>
-                    <input type="date" id="apply_date" name="apply_date" value="{{ old('apply_date') }}">
+                    <label for="apply_date">GHP apply date <span class="error">*</span></label>
+                    <input type="date" id="apply_date" name="apply_date" value="{{ old('apply_date', $defaultApplyDate->toDateString()) }}" required>
+                    <p class="hint">Defaults to the current GHP cycle's start date — editable if needed.</p>
                 </div>
                 <div class="field" style="flex: 1;">
-                    <label for="deduction_start_date">Deduction start date</label>
-                    <input type="date" id="deduction_start_date" name="deduction_start_date" value="{{ old('deduction_start_date') }}">
-                    <p class="hint">Required before a benefit period can be generated for this member.</p>
+                    <label for="start_date">Member start date <span class="error">*</span></label>
+                    <input type="date" id="start_date" name="start_date" value="{{ old('start_date', now()->toDateString()) }}" required>
+                    <p class="hint">When the member started/was added — kept separate from Apply Date. The first deduction is automatically the 1st of the following month.</p>
                 </div>
                 <div class="field" style="flex: 1;">
                     <label for="ghp_amount">GHP amount</label>
@@ -135,6 +136,8 @@
                     <p class="hint">Base is ₱3,600; ₱4,200 if the member has an eligible dependent (add dependents after saving).</p>
                 </div>
             </div>
+
+            <p class="hint">GHP cycle: {{ $currentCycleStart->format('M d, Y') }} &ndash; {{ $currentCycleEnd->format('M d, Y') }}</p>
 
             <div class="field" style="margin-bottom: 0;">
                 <label for="remarks">Remarks</label>
