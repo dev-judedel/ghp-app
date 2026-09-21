@@ -214,6 +214,7 @@
         @if ($member->benefitPeriods->isEmpty())
             <div class="empty-state"><p>No benefit period history.</p></div>
         @else
+            <p class="hint" style="margin-top: -8px; margin-bottom: 10px;">Click a period to view its reimbursement records.</p>
             <table>
                 <thead>
                     <tr><th>Period</th><th class="num">GHP amount</th><th class="num">Used</th><th class="num">Available</th></tr>
@@ -221,7 +222,11 @@
                 <tbody>
                     @foreach ($member->benefitPeriods as $period)
                         <tr>
-                            <td>{{ $period->from_date->format('M Y') }} &ndash; {{ $period->to_date->format('M Y') }}</td>
+                            <td>
+                                <a href="{{ route('members.benefit-periods.reimbursements', ['member' => $member, 'benefitPeriod' => $period]) }}">
+                                    {{ $period->from_date->format('M Y') }} &ndash; {{ $period->to_date->format('M Y') }}
+                                </a>
+                            </td>
                             <td class="num amount">&#8369;{{ number_format($period->ghp_amount, 2) }}</td>
                             <td class="num amount">&#8369;{{ number_format($period->ghp_used, 2) }}</td>
                             <td class="num amount">&#8369;{{ number_format($period->ghp_available, 2) }}</td>
@@ -448,11 +453,20 @@
                     @endif
 
                     <div class="ledger-strip" style="margin-bottom: 14px;">
+                        <div class="ledger-row">
+                            <span class="label">Available GHP amount</span>
+                            <span class="amount ledger" id="reimbursementAvailable">&#8369;{{ number_format($currentBenefitPeriod->ghp_available ?? 0, 2) }}</span>
+                        </div>
+                        <div class="ledger-row">
+                            <span class="label">Requested reimbursement</span>
+                            <span class="amount ledger" id="reimbursementRequested">&#8369;0.00</span>
+                        </div>
                         <div class="ledger-row total">
-                            <span class="label">Available balance</span>
-                            <span class="amount ledger">&#8369;{{ number_format($currentBenefitPeriod->ghp_available ?? 0, 2) }}</span>
+                            <span class="label">Remaining after reimbursement</span>
+                            <span class="amount ledger" id="reimbursementRemaining">&#8369;{{ number_format($currentBenefitPeriod->ghp_available ?? 0, 2) }}</span>
                         </div>
                     </div>
+                    <p class="error" id="reimbursementBalanceWarning" style="display: none; margin: -6px 0 14px;"></p>
 
                     <div style="display: flex; gap: 12px;">
                         <div class="field" style="flex: 1;">
@@ -467,8 +481,8 @@
 
                     <div class="field">
                         <label for="or_amount">Amount</label>
-                        <input type="number" id="or_amount" name="or_amount" value="{{ old('or_amount') }}" step="0.01" min="0.01" required>
-                        <p class="hint">Amounts above the available balance are still recorded in full — see the note after submitting.</p>
+                        <input type="number" id="or_amount" name="or_amount" value="{{ old('or_amount') }}" step="0.01" min="0.01" required oninput="updateReimbursementPreview()">
+                        <p class="hint">Cannot exceed the available GHP amount shown above — the balance shown is for the coverage period matching the OR date above (usually the current one).</p>
                     </div>
 
                     <div class="field">
@@ -489,7 +503,7 @@
 
                 <div class="modal-foot">
                     <button type="button" class="btn btn-ghost" onclick="fileReimbursementModal.close()">Cancel</button>
-                    <button type="submit" class="btn btn-primary" id="reimbursementFormSubmit">Record reimbursement</button>
+                    <button type="submit" class="btn btn-primary" id="reimbursementFormSubmit" onclick="return updateReimbursementPreview();">Record reimbursement</button>
                 </div>
             </form>
         </dialog>
@@ -534,6 +548,38 @@
         <script>
             const reimbursementStoreUrl = '{{ route('members.reimbursements.store', $member) }}';
             const reimbursementUpdateUrlBase = '{{ url('members/'.$member->id.'/reimbursements') }}';
+            const reimbursementAvailableBase = {{ (float) ($currentBenefitPeriod->ghp_available ?? 0) }};
+            let reimbursementCreditBack = 0;
+
+            function formatPeso(value) {
+                return '\u20b1' + value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            }
+
+            // Client-side preview only, for immediate feedback — the server
+            // re-checks this exact rule under a row lock before saving
+            // anything (see ReimbursementController::assertWithinBalance()),
+            // since this can be bypassed and is never trusted on its own.
+            function updateReimbursementPreview() {
+                const amount = parseFloat(document.getElementById('or_amount').value) || 0;
+                const available = reimbursementAvailableBase + reimbursementCreditBack;
+                const remaining = available - amount;
+
+                document.getElementById('reimbursementAvailable').textContent = formatPeso(available);
+                document.getElementById('reimbursementRequested').textContent = formatPeso(amount);
+                document.getElementById('reimbursementRemaining').textContent = formatPeso(Math.max(remaining, 0));
+
+                const warning = document.getElementById('reimbursementBalanceWarning');
+                const submitBtn = document.getElementById('reimbursementFormSubmit');
+                const insufficient = amount > available;
+
+                warning.style.display = insufficient ? 'block' : 'none';
+                warning.textContent = insufficient
+                    ? 'Insufficient GHP balance. Maximum reimbursement available: ' + formatPeso(available)
+                    : '';
+                submitBtn.disabled = insufficient || amount <= 0;
+
+                return ! submitBtn.disabled;
+            }
 
             function openFileReimbursement() {
                 document.getElementById('reimbursementModalTitle').textContent = 'File reimbursement';
@@ -546,6 +592,8 @@
                 document.getElementById('hospital_name').value = '';
                 document.getElementById('description').value = '';
                 document.getElementById('remarks').value = '';
+                reimbursementCreditBack = 0;
+                updateReimbursementPreview();
                 fileReimbursementModal.showModal();
             }
 
@@ -560,6 +608,15 @@
                 document.getElementById('hospital_name').value = hospital || '';
                 document.getElementById('description').value = description || '';
                 document.getElementById('remarks').value = remarks || '';
+                // This reimbursement's own current amount is still baked into
+                // the available balance shown above (server-computed from
+                // the CURRENT period) — credit it back client-side too so the
+                // preview doesn't falsely warn about a claim that's just
+                // being re-saved unchanged. Approximate on purpose (assumes
+                // the OR date stays in the current period); the server's own
+                // check in update() applies this precisely, per period.
+                reimbursementCreditBack = parseFloat(orAmount) || 0;
+                updateReimbursementPreview();
                 fileReimbursementModal.showModal();
             }
 
@@ -571,6 +628,8 @@
             }
 
             @if ($hasReimbursementErrors)
+                reimbursementCreditBack = 0;
+                updateReimbursementPreview();
                 fileReimbursementModal.showModal();
             @endif
 

@@ -30,12 +30,16 @@ use Carbon\CarbonInterface;
  *     if that prior year was entirely unused (used_amount == 0)
  *   - ghp_amount itself: 3600 base, 4200 if the member has at least one
  *     GHP-eligible dependent (see Dependent::isEligible)
- *   - "Used" is capped at the available fund balance: a reimbursement can
- *     be filed for more than the member has left (the receipt/OR amount is
- *     always recorded in full, unmodified, on the Reimbursement row itself
- *     — that's the audit trail), but the benefit period's ghp_used/
- *     ghp_available never reflect more than what the fund actually had.
- *     The uncapped total is available via calculate()['claimed'] if needed.
+ *   - "Used" is capped at the available fund balance as a defensive
+ *     floor only — it should never actually bind in normal operation,
+ *     since ReimbursementController now blocks any new reimbursement
+ *     whose amount exceeds availableBalanceFor() BEFORE it's ever saved
+ *     (see the GHP Reimbursement Rule note there). This cap stays in
+ *     place to protect the displayed balance against ever going negative
+ *     from data that predates that rule or from a manual BenefitPeriod
+ *     correction (see BenefitPeriodController::update()) — it is not the
+ *     primary gate anymore. The uncapped total is available via
+ *     calculate()['claimed'] if needed.
  *   - Voided reimbursements (Reimbursement::void()) are excluded from the
  *     "used" sum entirely — they never counted against the fund at all,
  *     as opposed to a capped claim which did count, just partially.
@@ -278,6 +282,32 @@ class BenefitAccrualService
     }
 
     /**
+     * Available balance for the coverage period that CONTAINS $orDate —
+     * used to gate a reimbursement request against the correct coverage
+     * year (Coverage Year History) rather than always against whichever
+     * period happens to be "current" today. See ReimbursementController's
+     * GHP Reimbursement Rule.
+     *
+     * Delegates to calculate(), just resolving the right "as of" cutoff
+     * first: if $orDate's period is the current, still-running one, that's
+     * min(now(), period end) — the same cutoff calculate() uses by default
+     * — so an in-progress period's accrual stays correctly prorated by
+     * month. If $orDate's period has already fully elapsed, the cutoff
+     * becomes the period's own end date, so a past period's balance is
+     * evaluated as a complete cycle rather than staying frozen at whatever
+     * partial accrual it had on the day it ended.
+     */
+    public function availableBalanceFor(Member $member, CarbonInterface $orDate): array
+    {
+        [, $periodEnd] = $this->coveragePeriod($member->member_type, $orDate);
+
+        $now = Carbon::now();
+        $asOf = $now->lessThan($periodEnd) ? $now : $periodEnd->copy();
+
+        return $this->calculate($member, $asOf);
+    }
+
+    /**
      * Calculates and persists (or updates) the BenefitPeriod for a member's
      * current coverage year. Idempotent — safe to re-run.
      */
@@ -288,8 +318,15 @@ class BenefitAccrualService
         return BenefitPeriod::updateOrCreate(
             [
                 'member_id' => $member->id,
-                'from_date' => $result['from'],
-                'to_date' => $result['to'],
+                // Match on date-only strings, not the raw Carbon instances.
+                // to_date is a DATE column, but coveragePeriod() builds $to
+                // with ->endOfDay() (time = 23:59:59) for accurate "as of"
+                // comparisons elsewhere (see countAccruedMonths()). Passing
+                // that raw value here made updateOrCreate()'s lookup compare
+                // '...23:59:59' against MySQL's midnight-padded DATE value,
+                // never match, then hit the unique constraint on insert.
+                'from_date' => $result['from']->toDateString(),
+                'to_date' => $result['to']->toDateString(),
             ],
             [
                 'ghp_amount' => $result['ghp_amount'],

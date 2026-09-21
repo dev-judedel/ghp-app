@@ -5,7 +5,7 @@ Use this as a quick reference before starting new work — check "Not Implemente
 before assuming something doesn't exist, and check "Known Issues" before
 re-diagnosing a problem that's already been flagged.
 
-**Last updated:** 2026-09-18
+**Last updated:** 2026-09-21
 
 ---
 
@@ -72,6 +72,26 @@ for Excel export — is no longer needed; that feature was built and then remove
 - **Tests:** `MemberManagementTest.php` (apply_date/deduction_start_date required on create and update), `BenefitAccrualServiceTest.php` (proration regression case)
 - **Unrelated pre-existing bug found while running the suite:** two `MemberManagementTest` tests (`test_an_admin_can_deactivate_an_active_member`, `test_individual_row_action_only_affects_the_one_member`) called the deactivate endpoint without a `resignation_date`, but `UpdateMemberStatusRequest` requires one when deactivating an active member (see 2.5/`MemberDeactivationTest`) — those tests were never updated when that rule was added, so they were failing (asserting the member deactivated when validation had actually rejected the request). Fixed by sending `resignation_date` in both.
 
+### 2.8 Test coverage for the financial-data controllers (Known Issues gap)
+- Added feature tests for the three controllers flagged as the riskiest untested gap (they touch GHP fund balances directly):
+  - **`ReimbursementController`**: filing, editing, void/unvoid, the benefit-period balance refresh after each action, the OR-date -> benefit-period linking, and the "claim exceeds available balance" capping behavior.
+  - **`AmountAdjustmentController`**: setting a manual override (and that it sticks via `ghp_amount_is_manual`), reverting to automatic (base vs. dependent-driven rate), the adjustment-history row written each time, and the benefit-period refresh that follows.
+  - **`DataQualityController`**: access control (admin-only), and each of the three live-DB detectors (corrupted benefit-period dates, ₱0-amount active members, active members missing a benefit period) — both the flagged and not-flagged cases.
+- Not covered: `ImportLegacyGhpData` (the console import command) — still open, see Known Issues.
+- **Tests:** `ReimbursementManagementTest.php`, `AmountAdjustmentManagementTest.php`, `DataQualityReportTest.php`
+- **Not yet run** — written from reading the controllers/routes/requests/models directly; run `php artisan test` to confirm they pass before relying on them.
+
+### 2.9 Coverage Year History → Reimbursement drill-down + printable receipt
+- Found **already built** (not this session, no prior task.md entry — done on another Claude surface): `reimbursements.benefit_period_id` FK (migration `2026_09_21_100000_add_benefit_period_id_to_reimbursements_table.php`, with backfill), `BenefitPeriodController::reimbursements()` (server-side, ID-filtered drill-down), `resources/views/benefit-periods/reimbursements.blade.php`, and the company-letterhead partial `reports/pdf/partials/company-header.blade.php` (your logo, already base64-embedded).
+- **Bug fixed this session**: `BenefitPeriodController::reimbursementsPdf()` referenced `reports.pdf.reimbursement-receipt`, which didn't exist — Print/Download PDF would throw `ViewNotFoundException`. Created `resources/views/reports/pdf/reimbursement-receipt.blade.php` (A4, company header, coverage period, member code/name, date generated, generated-by, reimbursement table, totals summary, empty-state).
+- **Not yet run** — `php artisan migrate` needs to be run for the `benefit_period_id` column if it hasn't been already; the Print/PDF fix hasn't been manually verified.
+
+### 2.10 Bug fix — stale tests in `BenefitAccrualServiceTest.php` testing superseded behavior
+- Root cause: `countAccruedMonths()` was rewritten during the Sep 2026 Deduction Date rework to be purely calendar-month based (no day-of-month cutoff) — see the SUPERSEDED note in `BenefitAccrualService`'s class docblock — but `tests/Unit/BenefitAccrualServiceTest.php` was never updated: 3 tests still asserted the old "day >= 15" per-month cutoff behavior with stale expected values, and two of them (`..._after_the_15th_prorates...`) fed the service a raw mid-month `deduction_start_date` (e.g. `2026-06-20`), which never happens in real usage — `resolveDeductionStartDate()` always resolves to the 1st of the following month before it's ever stored.
+- Fixed by: rewriting the day-of-month test into one that demonstrates day-of-month is now irrelevant (both day 10 and day 20 count their month fully), and changing the two mid-year proration tests to use a correctly-resolved `deduction_start_date` (`2026-07-01`, i.e. what a June 20 start actually resolves to) — expected values (9 months, ₱2,700 / ₱3,150) were already correct once the input matches reality. Also corrected the class-level docblock, which claimed this cutoff rule was validated elsewhere via `php artisan ghp:validate-accrual` instead of with fixtures here — that claim was itself stale (the rule no longer exists to validate).
+- **Tests:** `BenefitAccrualServiceTest.php`
+- **Not yet run** — fixed from reading the service and test code directly; run `php artisan test` to confirm.
+
 ### 2.7 Removed (per explicit request)
 - **Member export (CSV/PDF/Excel)**: was built in full, then removed at your request. Routes, view buttons, and the controller/PDF view were deleted from active use — the controller and PDF view are sitting in `_removed-by-claude/` at the project root (I can't truly delete files, only move/overwrite them; delete that folder yourself whenever convenient).
 - The shared `StreamsCsv` trait was **kept** — it's still used by the pre-existing Reports page exports (Annual GHP, Reimbursements), which were never part of this request.
@@ -89,7 +109,7 @@ These were flagged during analysis but intentionally left alone (out of scope fo
 | No self-service "forgot password" flow | Auth | Only login exists; a locked-out user needs an admin to reset them manually |
 | Password change doesn't invalidate other sessions | `ProfileController::updatePassword`, `UserController` | A stolen session stays valid after a password reset |
 | `email_verified_at` column is unused | `users` table | Present in schema, nothing sets or checks it |
-| Thin test coverage | `DataQualityController`, `AmountAdjustmentController`, `ReimbursementController`, `ImportLegacyGhpData` | No tests at all on these — riskiest gap given they touch financial data |
+| Thin test coverage | `ImportLegacyGhpData` | No tests yet — the console import command. `DataQualityController`, `AmountAdjustmentController`, and `ReimbursementController` now have feature test coverage (see 2.8 below); this command is what's left of the original gap |
 | `agent_positions.member_code` is a string match, not a FK | `AgentPosition` | Silent breakage risk if a code is reformatted/typo'd |
 | `dependents.relation` is free text, not an enum | `Dependent` | Known legacy-data bridge; a typo could silently affect eligibility logic |
 | `.card-head` doesn't wrap on narrow screens | `public/css/app.css` | Deliberately not touched (shared across many pages) — worth a dedicated pass |
@@ -139,7 +159,9 @@ database/migrations/  (profile_photo_path, users.is_active, users.user_code,
 
 tests/Feature/
   ProfileTest.php, MemberSearchTest.php, UserManagementTest.php,
-  MemberManagementTest.php, DepartmentManagementTest.php
+  MemberManagementTest.php, DepartmentManagementTest.php,
+  ReimbursementManagementTest.php, AmountAdjustmentManagementTest.php,
+  DataQualityReportTest.php
 
 _removed-by-claude/   (orphaned export controller + PDF view — safe to delete)
 ```

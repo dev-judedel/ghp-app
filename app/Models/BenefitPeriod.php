@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Spatie\Activitylog\LogOptions;
 use Spatie\Activitylog\Traits\LogsActivity;
 
@@ -42,6 +43,17 @@ class BenefitPeriod extends Model
     public function department(): BelongsTo
     {
         return $this->belongsTo(Department::class);
+    }
+
+    /**
+     * Reimbursements linked to this specific coverage year (see
+     * reimbursements.benefit_period_id and
+     * ReimbursementController::linkToBenefitPeriod()) — the Coverage
+     * Year History drill-down in BenefitPeriodController::reimbursements().
+     */
+    public function reimbursements(): HasMany
+    {
+        return $this->hasMany(Reimbursement::class);
     }
 
     /**

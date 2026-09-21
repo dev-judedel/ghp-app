@@ -12,9 +12,12 @@ use Tests\TestCase;
 /**
  * These tests cover only the parts of the accrual engine that are
  * unambiguous and consistent across all three legacy implementations
- * (see BenefitAccrualService docblock). The reinterpreted per-month
- * cutoff rule is validated separately against real historical data via
- * `php artisan ghp:validate-accrual`, not with contrived fixtures here.
+ * (see BenefitAccrualService docblock). The legacy per-month "day >= 15"
+ * cutoff was superseded entirely by the Sep 2026 Deduction Date rework —
+ * countAccruedMonths() is now purely calendar-month based and never
+ * looks at day-of-month, so there is no cutoff rule left to validate
+ * here or via a separate command; see BenefitAccrualService's class
+ * docblock for the full history.
  */
 class BenefitAccrualServiceTest extends TestCase
 {
@@ -120,29 +123,28 @@ class BenefitAccrualServiceTest extends TestCase
         $this->assertSame(100, $this->service->contributionTier($member->fresh(['dependents'])));
     }
 
-    public function test_month_counting_includes_enrollment_month_when_started_on_or_before_15th(): void
+    /**
+     * countAccruedMonths() flattens $accrualStart to the start of its
+     * month before counting, so April 10 and April 20 both count April
+     * as a full month — there is no "before/after the 15th" distinction
+     * anymore (see class docblock). Apr, May, Jun = 3 months either way.
+     */
+    public function test_month_counting_ignores_the_day_of_month_only_the_calendar_month_matters(): void
     {
-        $months = $this->service->countAccruedMonths(
+        $monthsFromEarlyApril = $this->service->countAccruedMonths(
             Carbon::parse('2025-04-10'),
             Carbon::parse('2026-03-31'),
             Carbon::parse('2025-06-30')
         );
 
-        // Apr, May, Jun = 3 months (enrolled on the 10th, counts from Apr)
-        $this->assertSame(3, $months);
-    }
-
-    public function test_month_counting_excludes_enrollment_month_when_started_after_15th(): void
-    {
-        $months = $this->service->countAccruedMonths(
+        $monthsFromLateApril = $this->service->countAccruedMonths(
             Carbon::parse('2025-04-20'),
             Carbon::parse('2026-03-31'),
             Carbon::parse('2025-06-30')
         );
 
-        // Started Apr 20 (after the 15th) -> April doesn't count.
-        // May, Jun = 2 months.
-        $this->assertSame(2, $months);
+        $this->assertSame(3, $monthsFromEarlyApril);
+        $this->assertSame(3, $monthsFromLateApril);
     }
 
     public function test_month_counting_stops_at_as_of_date(): void
@@ -165,17 +167,19 @@ class BenefitAccrualServiceTest extends TestCase
     /**
      * Walks through the exact scenario described when the apply/deduction
      * date requirement was added: an Employee (Apr 1–Mar 31 coverage year)
-     * joining mid-year, after the 15th, so the enrollment month itself
-     * doesn't count (see the per-month cutoff tests above). Base ₱3,600/yr
-     * (₱300/mo) with no dependents, joined June 20, 2026 → April, May,
-     * and June (the enrollment month, since day > 15) don't count — only
-     * July through March (9 months) do: ₱300 × 9 = ₱2,700.
+     * joining mid-year. deduction_start_date is always the 1st of the
+     * month AFTER start_date (see resolveDeductionStartDate() — never a
+     * raw mid-month value; a member who started June 20, 2026 gets
+     * deduction_start_date = 2026-07-01). Base ₱3,600/yr (₱300/mo) with
+     * no dependents, deduction starting July 1 → April, May, and June
+     * don't count — only July through March (9 months) do: ₱300 × 9 =
+     * ₱2,700.
      */
-    public function test_mid_year_enrollment_after_the_15th_prorates_to_nine_months(): void
+    public function test_mid_year_enrollment_prorates_to_nine_months(): void
     {
         $member = Member::factory()->create([
             'member_type' => Member::MEMBER_TYPE_EMPLOYEE,
-            'deduction_start_date' => Carbon::parse('2026-06-20'),
+            'deduction_start_date' => Carbon::parse('2026-07-01'),
             'ghp_amount' => 3600,
             'ghp_amount_is_manual' => false,
         ]);
@@ -196,7 +200,7 @@ class BenefitAccrualServiceTest extends TestCase
     {
         $member = Member::factory()->create([
             'member_type' => Member::MEMBER_TYPE_EMPLOYEE,
-            'deduction_start_date' => Carbon::parse('2026-06-20'),
+            'deduction_start_date' => Carbon::parse('2026-07-01'),
             'ghp_amount' => 3600,
             'ghp_amount_is_manual' => false,
         ]);

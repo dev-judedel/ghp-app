@@ -11,7 +11,10 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 use Spatie\Activitylog\LogOptions;
 use Spatie\Activitylog\Traits\LogsActivity;
 
-#[Fillable(['member_id', 'or_no', 'or_date', 'or_amount', 'hospital_name', 'description', 'remarks'])]
+#[Fillable([
+    'member_id', 'benefit_period_id', 'or_no', 'or_date', 'or_amount', 'hospital_name', 'description', 'remarks',
+    'is_voided', 'voided_at', 'voided_reason', 'voided_by',
+])]
 class Reimbursement extends Model
 {
     use HasFactory, SoftDeletes, LogsActivity;
@@ -29,6 +32,18 @@ class Reimbursement extends Model
     public function member(): BelongsTo
     {
         return $this->belongsTo(Member::class);
+    }
+
+    /**
+     * The Coverage Year / Benefit Period this reimbursement's OR date
+     * falls into (see ReimbursementController::linkToBenefitPeriod()).
+     * Nullable — reimbursements filed before this link existed, or ones
+     * backdated into a coverage year with no BenefitPeriod row yet, may
+     * not have one.
+     */
+    public function benefitPeriod(): BelongsTo
+    {
+        return $this->belongsTo(BenefitPeriod::class);
     }
 
     public function voidedBy(): BelongsTo

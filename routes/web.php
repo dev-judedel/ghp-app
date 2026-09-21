@@ -44,6 +44,13 @@ Route::middleware(['auth', 'active'])->group(function () {
     Route::get('/reports/reimbursements/csv', [ReportController::class, 'reimbursementsCsv'])->name('reports.reimbursements.csv');
     Route::get('/members/{member}/mdr', [ReportController::class, 'memberDataRecord'])->name('members.mdr');
 
+    // Coverage Year History -> Reimbursement drill-down (view + printable
+    // PDF receipt). Same visibility as the reimbursements table on the
+    // member page itself: any active authenticated user can view/print,
+    // not admin-only (admin-only is for the filing/edit/void actions).
+    Route::get('/members/{member}/benefit-periods/{benefitPeriod}/reimbursements', [BenefitPeriodController::class, 'reimbursements'])->name('members.benefit-periods.reimbursements');
+    Route::get('/members/{member}/benefit-periods/{benefitPeriod}/reimbursements/pdf', [BenefitPeriodController::class, 'reimbursementsPdf'])->name('members.benefit-periods.reimbursements.pdf');
+
     Route::middleware('admin')->group(function () {
         Route::post('/members/bulk-action', [MemberBulkActionController::class, 'store'])->name('members.bulk-action');
         Route::post('/members', [MemberController::class, 'store'])->name('members.store');
