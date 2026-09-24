@@ -9,7 +9,7 @@ use Carbon\CarbonInterface;
 
 /**
  * Reimplements the GHP benefit accrual calculation from the legacy
- * ghp_common_function.py (get_avail_ghp / update_ghp_of_members /
+ * ghp_common_function.py (get_avail_ghp / update_ghp_of_members /php
  * new_load_avail_used_ghp).
  *
  * IMPORTANT — this is NOT a literal line-by-line port. The legacy file
