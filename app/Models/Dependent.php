@@ -11,7 +11,7 @@ use Carbon\CarbonInterface;
 use Spatie\Activitylog\LogOptions;
 use Spatie\Activitylog\Traits\LogsActivity;
 
-#[Fillable(['member_id', 'name', 'relation', 'birthdate', 'date_added', 'eligibility_date'])]
+#[Fillable(['member_id', 'name', 'relation', 'birthdate', 'date_added', 'eligibility_date', 'immediate_eligibility_at', 'immediate_eligibility_by'])]
 class Dependent extends Model
 {
     use HasFactory, LogsActivity;
@@ -33,12 +33,30 @@ class Dependent extends Model
             'birthdate' => 'date',
             'date_added' => 'date',
             'eligibility_date' => 'date',
+            'immediate_eligibility_at' => 'datetime',
         ];
     }
 
     public function member(): BelongsTo
     {
         return $this->belongsTo(Member::class);
+    }
+
+    public function immediateEligibilityBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'immediate_eligibility_by');
+    }
+
+    /**
+     * Whether the administrator-controlled "Immediate Eligibility"
+     * exception can still be applied: only while the dependent is
+     * genuinely waiting on the normal Benefit Period rule ('pending').
+     * Already-eligible, already-immediate and age-ineligible dependents
+     * all return false.
+     */
+    public function canBeMadeImmediatelyEligible(): bool
+    {
+        return $this->eligibility_status === 'pending';
     }
 
     protected function age(): Attribute
@@ -94,8 +112,10 @@ class Dependent extends Model
 
     /**
      * Display-only status for the Dependents table: 'eligible',
-     * 'pending' (added this cycle, waiting for the next one), or
-     * 'not_eligible' (fails the age/relation rule regardless of timing).
+     * 'immediate' (an administrator bypassed the normal waiting rule via
+     * Immediate Eligibility), 'pending' (added this cycle, waiting for the
+     * next one), or 'not_eligible' (fails the age/relation rule regardless
+     * of timing).
      * Always evaluated as of today — for the GHP-amount-affecting
      * decision as of an arbitrary date, use isGhpEligibleAsOf() instead.
      */
@@ -108,6 +128,10 @@ class Dependent extends Model
 
             if ($this->eligibility_date !== null && now()->lessThan($this->eligibility_date)) {
                 return 'pending';
+            }
+
+            if ($this->immediate_eligibility_at !== null) {
+                return 'immediate';
             }
 
             return 'eligible';

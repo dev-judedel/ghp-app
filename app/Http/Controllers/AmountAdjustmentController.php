@@ -68,11 +68,18 @@ class AmountAdjustmentController extends Controller
             ->with('status', "GHP amount for {$member->code} reverted to automatic (₱".number_format($newAmount, 2).' based on current dependents).');
     }
 
+    /**
+     * Keeps an ALREADY-generated current period in step with the new
+     * amount. Deliberately never creates one — adjusting the GHP amount
+     * must not generate the benefit period as a side effect (that would
+     * disable the Generate button without anyone generating it). See
+     * BenefitAccrualService::refreshCurrentPeriodIfGenerated().
+     */
     private function refreshCurrentPeriod(Member $member, BenefitAccrualService $accrualService): void
     {
         if ($member->is_active && $member->deduction_start_date !== null) {
             $member->load('dependents', 'reimbursements', 'benefitPeriods');
-            $accrualService->accrue($member);
+            $accrualService->refreshCurrentPeriodIfGenerated($member);
         }
     }
 }

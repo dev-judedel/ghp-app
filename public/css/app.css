@@ -388,3 +388,41 @@ dialog.modal::backdrop {
     .profile-actions { margin-left: 0; width: 100%; }
     .profile-actions .btn { flex: 1; justify-content: center; }
 }
+
+/* ---------- Scrollable card body (appended — nothing above was changed) ----------
+   Caps a long table/list inside a card so the page doesn't grow with it.
+   The card's own .card-head sits OUTSIDE the scroll area, so the title stays
+   visible; the table header row stays pinned via position: sticky. With only
+   a few rows the content is shorter than max-height, so no scrollbar and no
+   extra empty space appear.
+
+   Usage: <div class="scroll-panel" tabindex="0" role="region" aria-label="..."> ...table... </div>
+   Modifier .scroll-panel-tall for content whose rows are taller (multi-line).
+   Height is min(<cap>, 60vh) so short viewports (tablet landscape, phones)
+   never give the panel more than ~60% of the screen. */
+
+.scroll-panel {
+    --scroll-panel-max: 340px;
+    max-height: min(var(--scroll-panel-max), 60vh);
+    overflow-y: auto;
+    overflow-x: auto; /* only engages if the table itself is wider than the card */
+    scrollbar-width: thin;
+    scrollbar-color: #B5C4BE transparent;
+}
+.scroll-panel-tall { --scroll-panel-max: 440px; }
+
+.scroll-panel::-webkit-scrollbar { width: 8px; height: 8px; }
+.scroll-panel::-webkit-scrollbar-track { background: transparent; }
+.scroll-panel::-webkit-scrollbar-thumb { background: #B5C4BE; border-radius: 100px; }
+.scroll-panel::-webkit-scrollbar-thumb:hover { background: var(--ink-muted); }
+
+/* Pinned header row. Uses an inset shadow instead of border-bottom because
+   borders don't travel with sticky cells under border-collapse. */
+.scroll-panel thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--surface);
+    border-bottom: none;
+    box-shadow: inset 0 -1px 0 var(--border);
+}

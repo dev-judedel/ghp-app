@@ -67,6 +67,7 @@ Route::middleware(['auth', 'active'])->group(function () {
         Route::post('/members/{member}/dependents', [DependentController::class, 'store'])->name('members.dependents.store');
         Route::put('/members/{member}/dependents/{dependent}', [DependentController::class, 'update'])->name('members.dependents.update');
         Route::delete('/members/{member}/dependents/{dependent}', [DependentController::class, 'destroy'])->name('members.dependents.destroy');
+        Route::post('/members/{member}/dependents/{dependent}/immediate-eligibility', [DependentController::class, 'immediateEligibility'])->name('members.dependents.immediate-eligibility');
 
         Route::post('/members/{member}/amount-adjustments', [AmountAdjustmentController::class, 'store'])->name('members.amount-adjustments.store');
         Route::post('/members/{member}/amount-adjustments/revert-to-automatic', [AmountAdjustmentController::class, 'revertToAutomatic'])->name('members.amount-adjustments.revert-to-automatic');

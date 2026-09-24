@@ -9,9 +9,13 @@ use App\Models\Department;
 use App\Models\Division;
 use App\Models\Member;
 use App\Services\BenefitAccrualService;
+use App\Services\DependentEligibilityService;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
+use RuntimeException;
 use Illuminate\View\View;
 
 class MemberController extends Controller
@@ -151,16 +155,83 @@ class MemberController extends Controller
         return $activities->sortByDesc('created_at')->take(30)->values();
     }
 
-    public function update(UpdateMemberRequest $request, Member $member, BenefitAccrualService $accrualService): RedirectResponse
+    /**
+     * Saves the member and, when the Edit Member modal's Civil Status is
+     * Married and no spouse is on file yet, creates the spouse as an
+     * ORDINARY dependent (relation = Spouse) through the same service the
+     * Add Dependent form uses — so it starts under the normal Benefit
+     * Period waiting rule. Married never implies Immediate Eligibility;
+     * that only happens if the admin explicitly picked it in the modal (or
+     * later uses the Immediate Eligibility button on the Dependents table).
+     *
+     * Never touches existing dependents: no duplicate spouse is created,
+     * and changing away from Married leaves any spouse record in place.
+     */
+    public function update(UpdateMemberRequest $request, Member $member, BenefitAccrualService $accrualService, DependentEligibilityService $eligibility): RedirectResponse
     {
-        $member->update($request->validated() + [
-            'is_active' => $request->boolean('is_active', false),
-            'deduction_start_date' => $accrualService->resolveDeductionStartDate($request->validated('start_date')),
-        ]);
+        $validated = $request->validated();
+
+        // spouse_* belong to the Dependent, not the Member row.
+        $memberData = Arr::except($validated, ['spouse_name', 'spouse_birthdate', 'spouse_eligibility']);
+
+        // Evaluated BEFORE saving/creating anything, while the answers still
+        // describe the member as they were when the form was opened.
+        $createSpouse = $request->spouseSectionApplicable() && filled($validated['spouse_name'] ?? null);
+        $spouseAlreadyOnFileWhileMarrying = $request->isChangingToMarried() && $request->memberAlreadyHasSpouse();
+        $leavingMarriedWithSpouseOnFile = $member->civil_status === Member::CIVIL_STATUS_MARRIED
+            && $request->filled('civil_status')
+            && (int) $request->input('civil_status') !== Member::CIVIL_STATUS_MARRIED
+            && $eligibility->hasSpouse($member);
+
+        $notices = [];
+
+        try {
+            DB::transaction(function () use ($request, $member, $accrualService, $eligibility, $validated, $memberData, $createSpouse, &$notices) {
+                $member->update($memberData + [
+                    'is_active' => $request->boolean('is_active', false),
+                    'deduction_start_date' => $accrualService->resolveDeductionStartDate($validated['start_date']),
+                ]);
+
+                if (! $createSpouse) {
+                    return;
+                }
+
+                $spouse = $eligibility->addDependent($member, [
+                    'name' => $validated['spouse_name'],
+                    'relation' => 'Spouse',
+                    'birthdate' => $validated['spouse_birthdate'] ?? null,
+                ]);
+
+                // Same members.ghp_amount sync the Add Dependent flow does;
+                // stays at the base rate until the spouse is eligible.
+                $eligibility->syncGhpAmount($member);
+
+                if (($validated['spouse_eligibility'] ?? 'normal') === 'immediate') {
+                    $eligibility->grantImmediate($member, $spouse, $request->user());
+                    $notices[] = "Spouse {$spouse->name} was added and made immediately eligible.";
+                } else {
+                    $notices[] = "Spouse {$spouse->name} was added as a dependent (normal eligibility — use \"Immediate Eligibility\" on the Dependents table if a rush is needed).";
+                }
+            });
+        } catch (RuntimeException $e) {
+            // The whole save is rolled back together (member + spouse), so
+            // the admin never ends up half-saved.
+            return redirect()
+                ->route('members.show', $member)
+                ->with('status', "Member {$member->code} was not saved: {$e->getMessage()}");
+        }
+
+        if ($spouseAlreadyOnFileWhileMarrying) {
+            $notices[] = 'This member already has a spouse dependent. Please review the existing dependent record.';
+        }
+
+        if ($leavingMarriedWithSpouseOnFile) {
+            $notices[] = 'The existing spouse dependent was kept — please review it under Dependents.';
+        }
 
         return redirect()
             ->route('members.show', $member)
-            ->with('status', "Member {$member->code} updated.");
+            ->with('status', trim("Member {$member->code} updated. ".implode(' ', $notices)));
     }
 
     /**
@@ -226,22 +297,31 @@ class MemberController extends Controller
 
         [$cycleStart, $cycleEnd] = $accrualService->coveragePeriod($member->member_type, now());
 
-        $result = DB::transaction(function () use ($member, $accrualService, $cycleStart, $cycleEnd) {
-            $lockedMember = Member::whereKey($member->id)->lockForUpdate()->firstOrFail();
+        try {
+            $result = DB::transaction(function () use ($member, $accrualService, $cycleStart, $cycleEnd) {
+                $lockedMember = Member::whereKey($member->id)->lockForUpdate()->firstOrFail();
 
-            $existing = $lockedMember->benefitPeriods()
-                ->whereDate('from_date', $cycleStart->toDateString())
-                ->whereDate('to_date', $cycleEnd->toDateString())
-                ->first();
+                $existing = $lockedMember->benefitPeriods()
+                    ->whereDate('from_date', $cycleStart->toDateString())
+                    ->whereDate('to_date', $cycleEnd->toDateString())
+                    ->first();
 
-            if ($existing) {
-                return ['created' => false, 'period' => $existing];
-            }
+                if ($existing) {
+                    return ['created' => false, 'period' => $existing];
+                }
 
-            $lockedMember->loadMissing('dependents', 'reimbursements', 'benefitPeriods');
+                $lockedMember->loadMissing('dependents', 'reimbursements', 'benefitPeriods');
 
-            return ['created' => true, 'period' => $accrualService->accrue($lockedMember)];
-        });
+                return ['created' => true, 'period' => $accrualService->accrue($lockedMember)];
+            });
+        } catch (UniqueConstraintViolationException) {
+            // Last-resort backstop: the unique index on (member_id,
+            // from_date, to_date) rejected a second row that slipped past
+            // the check above (e.g. a legacy row whose dates only matched
+            // by the index). Nothing was written — report it exactly like
+            // any other duplicate attempt.
+            $result = ['created' => false, 'period' => null];
+        }
 
         $period = $result['period'];
 

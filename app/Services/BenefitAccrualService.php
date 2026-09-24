@@ -371,4 +371,30 @@ class BenefitAccrualService
             ]
         );
     }
+
+    /**
+     * Refreshes the current cycle's BenefitPeriod ONLY if it has already
+     * been generated — never creates one.
+     *
+     * accrue() is updateOrCreate(), so any "just refresh the balance"
+     * caller that used it directly also silently GENERATED the period for a
+     * member who didn't have one, which flipped the member page's Generate
+     * button to disabled without anyone generating anything. Callers that
+     * are only reacting to a change (e.g. a GHP amount adjustment) use this
+     * instead, so generation stays an explicit action (Generate button /
+     * bulk action / scheduled job) and the database's "does the current
+     * cycle's period exist?" answer only changes when one is really
+     * generated.
+     */
+    public function refreshCurrentPeriodIfGenerated(Member $member, ?CarbonInterface $asOf = null): ?BenefitPeriod
+    {
+        [$from, $to] = $this->coveragePeriod($member->member_type, $asOf ?? Carbon::now());
+
+        $exists = $member->benefitPeriods()
+            ->whereDate('from_date', $from->toDateString())
+            ->whereDate('to_date', $to->toDateString())
+            ->exists();
+
+        return $exists ? $this->accrue($member, $asOf) : null;
+    }
 }

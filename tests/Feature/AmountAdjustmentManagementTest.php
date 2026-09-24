@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Member;
 use App\Models\User;
+use App\Services\BenefitAccrualService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -88,7 +89,35 @@ class AmountAdjustmentManagementTest extends TestCase
         ]);
     }
 
-    public function test_a_manual_override_refreshes_the_current_benefit_period(): void
+    public function test_a_manual_override_refreshes_an_already_generated_current_benefit_period(): void
+    {
+        $member = Member::factory()->create([
+            'is_active' => true,
+            'deduction_start_date' => '2026-04-01',
+            'ghp_amount' => 3600,
+            'ghp_amount_is_manual' => false,
+        ]);
+
+        // The period is generated explicitly first (what the Generate
+        // button does) — an adjustment only keeps it in step afterwards.
+        $member->load('dependents', 'reimbursements', 'benefitPeriods');
+        app(BenefitAccrualService::class)->accrue($member);
+
+        $this->actingAs($this->admin())->post(route('members.amount-adjustments.store', $member), [
+            'new_amount' => 4800,
+            'reason' => 'Special board approval',
+        ]);
+
+        $this->assertSame(1, $member->benefitPeriods()->count());
+        $this->assertSame(4800.0, (float) $member->benefitPeriods()->first()->ghp_amount);
+    }
+
+    /**
+     * Regression: an adjustment used to silently GENERATE the current
+     * period (via accrue()'s updateOrCreate), which disabled the member
+     * page's Generate button without anyone generating anything.
+     */
+    public function test_a_manual_override_does_not_generate_a_missing_benefit_period(): void
     {
         $member = Member::factory()->create([
             'is_active' => true,
@@ -102,9 +131,8 @@ class AmountAdjustmentManagementTest extends TestCase
             'reason' => 'Special board approval',
         ]);
 
-        $period = $member->benefitPeriods()->first();
-        $this->assertNotNull($period);
-        $this->assertSame(4800.0, (float) $period->ghp_amount);
+        $this->assertSame(0, $member->benefitPeriods()->count());
+        $this->assertSame(4800.0, (float) $member->fresh()->ghp_amount);
     }
 
     // ---- revertToAutomatic ----

@@ -6,8 +6,9 @@ use App\Http\Requests\StoreDependentRequest;
 use App\Models\Dependent;
 use App\Models\Member;
 use App\Services\BenefitAccrualService;
+use App\Services\DependentEligibilityService;
 use Illuminate\Http\RedirectResponse;
-use Illuminate\Support\Carbon;
+use RuntimeException;
 
 class DependentController extends Controller
 {
@@ -25,19 +26,44 @@ class DependentController extends Controller
      * as before — it just now correctly stays at the base rate until the
      * next cycle, instead of the previous behavior of bumping immediately.
      */
-    public function store(StoreDependentRequest $request, Member $member, BenefitAccrualService $accrualService): RedirectResponse
+    public function store(StoreDependentRequest $request, Member $member, BenefitAccrualService $accrualService, DependentEligibilityService $eligibility): RedirectResponse
     {
-        $today = Carbon::now();
-
-        $member->dependents()->create($request->validated() + [
-            'date_added' => $today->toDateString(),
-            'eligibility_date' => $accrualService->resolveDependentEligibilityDate($member->member_type, $today)->toDateString(),
-        ]);
+        // Same behavior as before — creation just lives in the shared
+        // service now so the Edit Member spouse flow uses the identical rule.
+        $eligibility->addDependent($member, $request->validated());
 
         $this->syncGhpAmount($member, $accrualService);
 
         return redirect()->route('members.show', $member)
             ->with('status', "Dependent added for {$member->code}. Eligible for the higher GHP amount starting the next coverage cycle.");
+    }
+
+    /**
+     * ================================================================
+     * Immediate Eligibility (administrator-controlled exception)
+     * ================================================================
+     * Lets an admin bypass the normal "wait for the next Benefit Period"
+     * rule for ONE dependent. Everything is re-validated here on the
+     * backend (admin, dependent-belongs-to-member, still pending) — the
+     * hidden/shown button in the view is a convenience, never the gate.
+     *
+     * Does not touch BenefitPeriod rows: no generation, no reset, no
+     * change to Coverage Year History, and the Generate button's
+     * one-period-per-cycle rule is unaffected.
+     */
+    public function immediateEligibility(Member $member, Dependent $dependent, DependentEligibilityService $eligibility): RedirectResponse
+    {
+        abort_unless(auth()->user()->isAdmin(), 403);
+        abort_unless($dependent->member_id === $member->id, 404);
+
+        try {
+            $eligibility->grantImmediate($member, $dependent, auth()->user());
+        } catch (RuntimeException $e) {
+            return redirect()->route('members.show', $member)->with('status', $e->getMessage());
+        }
+
+        return redirect()->route('members.show', $member)
+            ->with('status', "{$dependent->name} is now immediately eligible for {$member->code}. The GHP amount was updated by the standard calculation; the existing benefit period was not changed.");
     }
 
     public function update(StoreDependentRequest $request, Member $member, Dependent $dependent, BenefitAccrualService $accrualService): RedirectResponse

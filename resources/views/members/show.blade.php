@@ -5,7 +5,9 @@
 @php
     $hasReimbursementErrors = $errors->any() && $errors->has('or_amount');
     $hasDependentErrors = $errors->any() && ($errors->has('name') || $errors->has('relation'));
-    $hasMemberEditErrors = $errors->any() && ($errors->has('code') || $errors->has('email')) && old('_form') === 'edit_member';
+    $hasMemberEditErrors = $errors->any() && ($errors->has('code') || $errors->has('email') || $errors->has('spouse_name') || $errors->has('spouse_birthdate')) && old('_form') === 'edit_member';
+    // Relation is free text — same case-insensitive spouse match DependentEligibilityService::hasSpouse() uses.
+    $memberHasSpouse = $member->dependents->contains(fn ($d) => strtolower(trim($d->relation)) === 'spouse');
     $hasVoidErrors = $errors->any() && $errors->has('reason');
 @endphp
 
@@ -95,8 +97,11 @@
                         title="Benefit period already generated for the current GHP cycle ({{ $currentCycleStart->format('M d, Y') }} – {{ $currentCycleEnd->format('M d, Y') }}). Available again after {{ $currentCycleEnd->format('M d, Y') }}.">
                         Generate this year's benefit period
                     </button>
+                @elseif (auth()->user()->isAdmin())
+                    <button type="button" class="btn btn-primary" id="generateBenefitPeriodButton" onclick="generateBenefitPeriodModal.showModal()">Generate this year's benefit period</button>
                 @else
-                    <button type="button" class="btn btn-primary" onclick="generateBenefitPeriodModal.showModal()">Generate this year's benefit period</button>
+                    {{-- The generate route is admin-only; don't offer a click that can only 403. --}}
+                    <button type="button" class="btn btn-ghost" disabled title="Only an administrator can generate a benefit period.">Generate this year's benefit period</button>
                 @endif
             </div>
         </div>
@@ -184,8 +189,8 @@
                 <tbody>
                     @foreach ($member->dependents as $dependent)
                         @php
-                            $statusLabels = ['eligible' => 'Eligible', 'pending' => 'Pending Eligibility', 'not_eligible' => 'Not eligible'];
-                            $statusBadge = ['eligible' => 'badge-ok', 'pending' => 'badge-agent', 'not_eligible' => 'badge-warn'];
+                            $statusLabels = ['eligible' => 'Eligible', 'immediate' => 'Immediate Eligible', 'pending' => 'Pending Eligibility', 'not_eligible' => 'Not eligible'];
+                            $statusBadge = ['eligible' => 'badge-ok', 'immediate' => 'badge-ok', 'pending' => 'badge-agent', 'not_eligible' => 'badge-warn'];
                         @endphp
                         <tr>
                             <td>{{ $dependent->name }}</td>
@@ -201,6 +206,13 @@
                             <td>{{ optional($dependent->eligibility_date)->format('F Y') ?? '—' }}</td>
                             @if (auth()->user()->isAdmin())
                                 <td style="white-space: nowrap;">
+                                    {{-- Only while still waiting on the normal Benefit Period rule; the backend re-checks this, the button is just a convenience. --}}
+                                    @if ($dependent->canBeMadeImmediatelyEligible())
+                                        <button type="button" class="btn btn-primary" style="padding: 4px 10px; font-size: 12px;"
+                                            onclick="openImmediateEligibility({{ $dependent->id }}, {{ json_encode($dependent->name) }}, {{ json_encode($dependent->relation) }}, {{ json_encode(optional($dependent->eligibility_date)->format('F d, Y')) }})">
+                                            Immediate Eligibility
+                                        </button>
+                                    @endif
                                     <button type="button" class="btn btn-ghost" style="padding: 4px 10px; font-size: 12px;"
                                         onclick="openEditDependent({{ $dependent->id }}, {{ json_encode($dependent->name) }}, {{ json_encode($dependent->relation) }}, {{ json_encode(optional($dependent->birthdate)->toDateString()) }})">
                                         Edit
@@ -322,6 +334,7 @@
                     <h2>Amount adjustment history</h2>
                 </div>
             </div>
+            <div class="scroll-panel" tabindex="0" role="region" aria-label="Amount adjustment history (scrollable)">
             <table>
                 <thead>
                     <tr><th>Date</th><th class="num">Old amount</th><th class="num">New amount</th><th>Reason</th><th>Reference</th><th>Recorded by</th></tr>
@@ -339,6 +352,7 @@
                     @endforeach
                 </tbody>
             </table>
+            </div>
         </div>
     @endif
 
@@ -350,6 +364,7 @@
                     <h2>Recent activity</h2>
                 </div>
             </div>
+            <div class="scroll-panel scroll-panel-tall" tabindex="0" role="region" aria-label="Recent activity (scrollable)">
             <table>
                 <thead>
                     <tr><th style="width: 150px;">When</th><th style="width: 130px;">By</th><th>What changed</th></tr>
@@ -381,7 +396,71 @@
                     @endforeach
                 </tbody>
             </table>
+            </div>
         </div>
+    @endif
+
+    {{-- Generate benefit period confirmation. Only rendered while the current cycle has NO period yet (the button that opens it is only enabled then). --}}
+    @if (auth()->user()->isAdmin() && ! $currentCyclePeriod)
+        <dialog id="generateBenefitPeriodModal" class="modal">
+            <form method="POST" action="{{ route('members.generate-benefit-period', $member) }}" id="generateBenefitPeriodForm" onsubmit="return lockGenerateBenefitPeriodSubmit();">
+                @csrf
+
+                <div class="modal-head">
+                    <h2>Generate benefit period</h2>
+                    <button type="button" class="modal-close" onclick="generateBenefitPeriodModal.close()" aria-label="Close">&times;</button>
+                </div>
+
+                <div class="modal-body">
+                    <p style="margin-bottom: 12px;">Generate the benefit period for <strong>{{ $currentCycleStart->format('F Y') }} &ndash; {{ $currentCycleEnd->format('F Y') }}</strong> for {{ $member->code }}?</p>
+                    <p class="hint" style="margin: 0;">Only one benefit period can exist per GHP cycle. Once generated it can't be voided, deleted or regenerated, and this button stays disabled until the next cycle begins.</p>
+                </div>
+
+                <div class="modal-foot">
+                    <button type="button" class="btn btn-ghost" onclick="generateBenefitPeriodModal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary" id="generateBenefitPeriodSubmit">Generate benefit period</button>
+                </div>
+            </form>
+        </dialog>
+
+        <script>
+            // Double-click protection: the first submit locks the button and
+            // shows a loading label; further submits are ignored. The page then
+            // reloads and the button state comes from the database (disabled if
+            // the period was created, still enabled if the request failed).
+            // Safety nets so a failed/aborted request never leaves it stuck:
+            // restore on bfcache return (Back button) and after a timeout.
+            let generateBenefitPeriodSubmitting = false;
+
+            function resetGenerateBenefitPeriodSubmit() {
+                const submit = document.getElementById('generateBenefitPeriodSubmit');
+
+                generateBenefitPeriodSubmitting = false;
+
+                if (submit) {
+                    submit.disabled = false;
+                    submit.textContent = 'Generate benefit period';
+                }
+            }
+
+            function lockGenerateBenefitPeriodSubmit() {
+                if (generateBenefitPeriodSubmitting) {
+                    return false;
+                }
+
+                generateBenefitPeriodSubmitting = true;
+
+                const submit = document.getElementById('generateBenefitPeriodSubmit');
+                submit.disabled = true;
+                submit.textContent = 'Generating\u2026';
+
+                setTimeout(resetGenerateBenefitPeriodSubmit, 20000);
+
+                return true;
+            }
+
+            window.addEventListener('pageshow', resetGenerateBenefitPeriodSubmit);
+        </script>
     @endif
 
     {{-- Adjust GHP amount modal --}}
@@ -742,6 +821,58 @@
             @endif
         </script>
     @endif
+    {{-- Immediate Eligibility confirmation (administrator-controlled exception to the normal Benefit Period waiting rule) --}}
+    @if (auth()->user()->isAdmin())
+        <dialog id="immediateEligibilityModal" class="modal">
+            <form method="POST" id="immediateEligibilityForm" action="">
+                @csrf
+
+                <div class="modal-head">
+                    <h2>Immediate Dependent Eligibility</h2>
+                    <button type="button" class="modal-close" onclick="immediateEligibilityModal.close()" aria-label="Close">&times;</button>
+                </div>
+
+                <div class="modal-body">
+                    <p style="margin-bottom: 12px;">You are about to make this dependent immediately eligible.</p>
+
+                    <table>
+                        <tbody>
+                            <tr><th style="width: 200px;">Dependent</th><td id="immediateEligibilityName"></td></tr>
+                            <tr><th>Relationship</th><td id="immediateEligibilityRelation"></td></tr>
+                            <tr><th>Current benefit period</th><td>{{ $currentCycleStart->format('F Y') }} &ndash; {{ $currentCycleEnd->format('F Y') }}</td></tr>
+                            <tr><th>Normal eligibility</th><td>After the current benefit period ends<span id="immediateEligibilityNormalDate"></span>.</td></tr>
+                            <tr><th>Immediate eligibility</th><td>Eligible immediately.</td></tr>
+                        </tbody>
+                    </table>
+
+                    <p class="hint" style="margin-top: 12px; margin-bottom: 0;">
+                        This bypasses the normal waiting rule for this dependent only, and is recorded in the activity log. It does not generate, change or reopen any benefit period.
+                    </p>
+                    <p style="margin: 12px 0 0;"><strong>Are you sure you want to continue?</strong></p>
+                </div>
+
+                <div class="modal-foot">
+                    <button type="button" class="btn btn-ghost" onclick="immediateEligibilityModal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Confirm Immediate Eligibility</button>
+                </div>
+            </form>
+        </dialog>
+
+        <script>
+            const immediateEligibilityUrlBase = '{{ url('members/'.$member->id.'/dependents') }}';
+
+            // Only fills in and opens the confirmation — nothing changes until
+            // the admin submits it, and the server re-validates everything.
+            function openImmediateEligibility(id, name, relation, normalDate) {
+                document.getElementById('immediateEligibilityForm').action = immediateEligibilityUrlBase + '/' + id + '/immediate-eligibility';
+                document.getElementById('immediateEligibilityName').textContent = name;
+                document.getElementById('immediateEligibilityRelation').textContent = relation;
+                document.getElementById('immediateEligibilityNormalDate').textContent = normalDate ? ' (from ' + normalDate + ')' : '';
+                immediateEligibilityModal.showModal();
+            }
+        </script>
+    @endif
+
     {{-- Edit member modal — same field structure as the Add Member modal on the list page, for consistency --}}
     @if (auth()->user()->isAdmin())
         <dialog id="editMemberModal" class="modal" style="max-width: 640px;">
@@ -819,10 +950,46 @@
                         <div class="field" style="flex: 1;">
                             <label>Civil status</label>
                             <div class="radio-group" style="flex-direction: row; gap: 20px; padding-top: 9px;">
-                                <label><input type="radio" name="civil_status" value="0" @checked(old('civil_status', $member->civil_status) == 0)> Single</label>
-                                <label><input type="radio" name="civil_status" value="1" @checked(old('civil_status', $member->civil_status) == 1)> Married</label>
+                                <label><input type="radio" name="civil_status" value="0" @checked(old('civil_status', $member->civil_status) == 0) onchange="toggleSpouseSection()"> Single</label>
+                                <label><input type="radio" name="civil_status" value="1" @checked(old('civil_status', $member->civil_status) == 1) onchange="toggleSpouseSection()"> Married</label>
                             </div>
                         </div>
+                    </div>
+
+                    {{-- Dependent Spouse: only shown while Civil status = Married. Saved as an ordinary dependent (relation = Spouse). --}}
+                    <div id="spouseSection" style="display: none; border: 1px solid var(--border, #d9d9d9); border-radius: 8px; padding: 12px 14px; margin-bottom: 14px;">
+                        <h3 style="margin-bottom: 8px;">Dependent Spouse</h3>
+
+                        @if ($memberHasSpouse)
+                            <p class="hint" style="margin: 0;">This member already has a spouse dependent. Please review the existing dependent record in the Dependents table — no second spouse will be created.</p>
+                        @else
+                            <div style="display: flex; gap: 12px;">
+                                <div class="field" style="flex: 1;">
+                                    <label for="spouse_name">Spouse name <span class="error">*</span></label>
+                                    <input type="text" id="spouse_name" name="spouse_name" value="{{ old('spouse_name') }}" disabled>
+                                    @error('spouse_name') <p class="error">{{ $message }}</p> @enderror
+                                </div>
+                                <div class="field" style="flex: 1;">
+                                    <label for="spouse_birthdate">Birthday <span class="error">*</span></label>
+                                    <input type="date" id="spouse_birthdate" name="spouse_birthdate" value="{{ old('spouse_birthdate') }}" max="{{ now()->toDateString() }}" disabled>
+                                    @error('spouse_birthdate') <p class="error">{{ $message }}</p> @enderror
+                                </div>
+                            </div>
+                            <div style="display: flex; gap: 12px;">
+                                <div class="field" style="flex: 1; margin-bottom: 0;">
+                                    <label>Relationship</label>
+                                    <div style="padding-top: 9px;">Spouse</div>
+                                </div>
+                                <div class="field" style="flex: 1; margin-bottom: 0;">
+                                    <label for="spouse_eligibility">Eligibility</label>
+                                    <select id="spouse_eligibility" name="spouse_eligibility" disabled>
+                                        <option value="normal" @selected(old('spouse_eligibility', 'normal') === 'normal')>Normal (wait for the benefit period)</option>
+                                        <option value="immediate" @selected(old('spouse_eligibility') === 'immediate')>Immediate</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <p class="hint" style="margin: 8px 0 0;">Marking a member Married does not by itself make the spouse immediately eligible — leave this on Normal unless a rush is needed. You can also use "Immediate Eligibility" on the Dependents table later.</p>
+                        @endif
                     </div>
 
                     <h3 style="margin: 18px 0 10px;">Assignment</h3>
@@ -893,6 +1060,40 @@
         @endif
 
         <script>
+            // Show the spouse section only for Civil status = Married. The
+            // inputs are disabled while hidden so they are never submitted,
+            // and get `required` only when the member is being CHANGED to
+            // Married (an already-Married member isn't forced to add one).
+            // Display only — UpdateMemberRequest is the real validation.
+            const memberWasMarried = {{ $member->civil_status === \App\Models\Member::CIVIL_STATUS_MARRIED ? 'true' : 'false' }};
+
+            function toggleSpouseSection() {
+                const married = document.querySelector('#editMemberModal input[name="civil_status"]:checked')?.value === '1';
+                const section = document.getElementById('spouseSection');
+
+                if (! section) {
+                    return;
+                }
+
+                section.style.display = married ? 'block' : 'none';
+
+                ['spouse_name', 'spouse_birthdate', 'spouse_eligibility'].forEach(function (id) {
+                    const el = document.getElementById(id);
+
+                    if (! el) {
+                        return;
+                    }
+
+                    el.disabled = ! married;
+
+                    if (id !== 'spouse_eligibility') {
+                        el.required = married && ! memberWasMarried;
+                    }
+                });
+            }
+
+            toggleSpouseSection();
+
             // Same live-preview mirror as the Add Member modal (see
             // members/index.blade.php) — display only, server is authoritative.
             function updateEditDeductionPreview() {
