@@ -17,6 +17,11 @@ class MemberBulkActionController extends Controller
         $validated = $request->validate([
             'member_ids' => ['required', 'array', 'min:1'],
             'member_ids.*' => ['integer', 'exists:members,id'],
+            // Bulk activate/deactivate for multi-select, alongside the
+            // per-row Action column on the table (MemberController::
+            // updateStatus) which handles the single-member case. Both
+            // exist side by side on purpose — bulk for "these 20 members
+            // just got laid off", per-row for "fix this one record".
             'bulk_action' => ['required', 'in:activate,deactivate,generate_benefit_period'],
         ]);
 

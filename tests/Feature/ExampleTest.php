@@ -2,18 +2,21 @@
 
 namespace Tests\Feature;
 
-// use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
 class ExampleTest extends TestCase
 {
     /**
-     * A basic test example.
+     * The root path has no page of its own — it always redirects to the
+     * dashboard (see routes/web.php). This replaces Laravel's default
+     * scaffold test, which asserted a 200 here and had been failing/unused
+     * ever since this app was built (the app never had a "home page" at
+     * '/' that would return 200 directly).
      */
-    public function test_the_application_returns_a_successful_response(): void
+    public function test_the_root_path_redirects_to_the_dashboard(): void
     {
         $response = $this->get('/');
 
-        $response->assertStatus(200);
+        $response->assertRedirect(route('dashboard'));
     }
 }

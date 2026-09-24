@@ -20,11 +20,17 @@
         .ledger td.amt { text-align: right; font-family: 'DejaVu Sans Mono', monospace; font-weight: bold; }
         .ledger tr.total td { font-size: 14px; color: #0F5C50; border-bottom: none; border-top: 2px solid #0F5C50; padding-top: 8px; }
         .footer { margin-top: 20px; font-size: 8px; color: #8FB3A9; }
+        .report-title { text-align: center; font-size: 15px; font-weight: bold; color: #0A3F37; text-transform: uppercase; letter-spacing: 0.04em; margin: 0 0 2px; }
+        .report-subtitle { text-align: center; font-size: 10px; color: #5B6B65; margin: 0 0 16px; }
+        hr.divider { border: none; border-top: 2px solid #0F5C50; margin: 0 0 14px; }
     </style>
 </head>
 <body>
-    <h1>Member Data Record</h1>
-    <div class="subtitle">Generated {{ $generatedAt->format('M d, Y g:i A') }}</div>
+    @include('reports.pdf.partials.company-header')
+
+    <p class="report-title">Member Data Record</p>
+    <p class="report-subtitle">Generated {{ $generatedAt->format('M d, Y g:i A') }}</p>
+    <hr class="divider">
 
     <h2>Member Profile</h2>
     <table class="infotable">

@@ -30,22 +30,30 @@ use Carbon\CarbonInterface;
  *     if that prior year was entirely unused (used_amount == 0)
  *   - ghp_amount itself: 3600 base, 4200 if the member has at least one
  *     GHP-eligible dependent (see Dependent::isEligible)
- *   - "Used" is capped at the available fund balance: a reimbursement can
- *     be filed for more than the member has left (the receipt/OR amount is
- *     always recorded in full, unmodified, on the Reimbursement row itself
- *     — that's the audit trail), but the benefit period's ghp_used/
- *     ghp_available never reflect more than what the fund actually had.
- *     The uncapped total is available via calculate()['claimed'] if needed.
+ *   - "Used" is capped at the available fund balance as a defensive
+ *     floor only — it should never actually bind in normal operation,
+ *     since ReimbursementController now blocks any new reimbursement
+ *     whose amount exceeds availableBalanceFor() BEFORE it's ever saved
+ *     (see the GHP Reimbursement Rule note there). This cap stays in
+ *     place to protect the displayed balance against ever going negative
+ *     from data that predates that rule or from a manual BenefitPeriod
+ *     correction (see BenefitPeriodController::update()) — it is not the
+ *     primary gate anymore. The uncapped total is available via
+ *     calculate()['claimed'] if needed.
  *   - Voided reimbursements (Reimbursement::void()) are excluded from the
  *     "used" sum entirely — they never counted against the fund at all,
  *     as opposed to a capped claim which did count, just partially.
  *
- * What was reinterpreted (flagged, needs business-owner confirmation):
- *   - The "day >= 15" cutoff is applied PER MONTH here: a month counts
- *     toward accrual if enrollment fell on/before the 15th of that month
- *     (standard mid-month payroll convention), rather than as a single
- *     gate on the whole year. Validate this against real history using
- *     `php artisan ghp:validate-accrual` before trusting it in production.
+ * What was reinterpreted (SUPERSEDED — see below, no longer flagged as
+ * needing confirmation as of the Sep 2026 Deduction Date rework):
+ *   - Originally: the legacy "day >= 15" cutoff was applied PER MONTH
+ *     (a month counted if enrollment fell on/before the 15th). That has
+ *     been replaced entirely by an explicit, confirmed business rule: the
+ *     member's start_date month NEVER counts, and the first deduction
+ *     month is always the calendar month immediately following start_date
+ *     (see resolveDeductionStartDate()) — regardless of which day of the
+ *     month start_date falls on. This is no longer an assumption needing
+ *     validation; it's how deduction_start_date is now computed, always.
  *
  * See migration analysis doc §3 for the original findings.
  */
@@ -54,6 +62,26 @@ class BenefitAccrualService
     private const BASE_GHP_AMOUNT = 3600.0;
 
     private const DEPENDENT_GHP_AMOUNT = 4200.0;
+
+    /**
+     * First-day-of-the-month-after-$startDate, per the Deduction Date
+     * business rule: the member's start month is never deducted — the
+     * first deduction always falls on the 1st of the following calendar
+     * month, regardless of what day within the start month $startDate is.
+     * Purely calendar-based, not cycle-aware on purpose — a member who
+     * starts in the cycle's last month (e.g. March for Employees) correctly
+     * gets a deduction_start_date that falls in the NEXT cycle (April),
+     * which is exactly the intended "0 months this cycle" outcome.
+     *
+     * Accepts a plain string on purpose: $request->validated('start_date')
+     * returns a raw string (Laravel's 'date' validation rule validates the
+     * format, it doesn't cast the value), and Carbon::parse() handles
+     * either a string or an existing Carbon/DateTime instance identically.
+     */
+    public function resolveDeductionStartDate(string|CarbonInterface $startDate): Carbon
+    {
+        return Carbon::parse($startDate)->startOfMonth()->addMonthNoOverflow();
+    }
 
     /**
      * Returns [Carbon $from, Carbon $to] for the coverage year containing
@@ -127,10 +155,13 @@ class BenefitAccrualService
     }
 
     /**
-     * Counts how many months, from $accrualStart through min($periodEnd, $asOf),
-     * count toward accrual under the per-month "enrolled by the 15th" rule.
-     * See class docblock — this is a reinterpretation of the legacy cutoff,
-     * not a literal port. Validate with `ghp:validate-accrual`.
+     * Counts whole calendar months from $accrualStart through
+     * min($periodEnd, $asOf), inclusive. $accrualStart is expected to
+     * already be month-aligned (deduction_start_date is always the 1st of
+     * a month — see resolveDeductionStartDate()), but this is written to
+     * degrade gracefully for any day-of-month too (legacy records
+     * imported before this field existed), simply by counting calendar
+     * months spanned rather than doing day-level cutoff logic.
      */
     public function countAccruedMonths(CarbonInterface $accrualStart, CarbonInterface $periodEnd, CarbonInterface $asOf): int
     {
@@ -140,21 +171,55 @@ class BenefitAccrualService
             return 0;
         }
 
-        $months = 0;
-        $cursor = $accrualStart->copy()->startOfMonth();
+        $start = $accrualStart->copy()->startOfMonth();
+        $endMonth = $end->copy()->startOfMonth();
 
-        while ($cursor->lte($end)) {
-            $isEnrollmentMonth = $cursor->isSameMonth($accrualStart) && $cursor->isSameYear($accrualStart);
-            $countsThisMonth = $isEnrollmentMonth ? $accrualStart->day <= 15 : true;
+        return (int) $start->diffInMonths($endMonth) + 1;
+    }
 
-            if ($countsThisMonth) {
-                $months++;
-            }
+    /**
+     * Full-cycle target amount for display ("Required GHP Amount" on the
+     * member page / Benefit Setup) — NOT the same thing as calculate()
+     * ['available'], which caps at today's date for reimbursement-gating
+     * purposes. This is the member's total obligation for the WHOLE
+     * remaining coverage cycle, independent of what today's date is —
+     * computed by passing the cycle's own end date as the "as of" cutoff
+     * instead of now(), so no capping happens.
+     *
+     * @return array{ghp_amount: float, applicable_months: int, monthly_rate: float,
+     *               required_amount: float, from: CarbonInterface, to: CarbonInterface}
+     */
+    public function requiredAmountForCycle(Member $member, ?CarbonInterface $referenceDate = null): array
+    {
+        $referenceDate = $referenceDate ?? Carbon::now();
 
-            $cursor = $cursor->addMonthNoOverflow();
-        }
+        [$from, $to] = $this->coveragePeriod($member->member_type, $referenceDate);
 
-        return $months;
+        $ghpAmount = $this->resolveGhpAmount($member);
+
+        // Clamped to the CURRENT cycle's own start — without this, a
+        // member's second/third/... cycle would keep counting months all
+        // the way back to their original enrollment date instead of
+        // correctly resetting to a full cycle. Only the member's very
+        // first (enrollment) cycle should ever come up short of 12 months;
+        // every cycle after that, they were already active before the
+        // cycle began, so it's a full cycle. Mirrors the same clamp
+        // calculate() already does for the real persisted balance.
+        $dedStart = $member->deduction_start_date ?? $from;
+        $accrualStart = $dedStart->greaterThan($from) ? $dedStart : $from;
+
+        $applicableMonths = $this->countAccruedMonths($accrualStart, $to, $to);
+        $monthlyRate = $ghpAmount / 12;
+        $requiredAmount = round($monthlyRate * $applicableMonths, 2);
+
+        return [
+            'ghp_amount' => $ghpAmount,
+            'applicable_months' => $applicableMonths,
+            'monthly_rate' => round($monthlyRate, 2),
+            'required_amount' => $requiredAmount,
+            'from' => $from,
+            'to' => $to,
+        ];
     }
 
     /**
@@ -217,6 +282,32 @@ class BenefitAccrualService
     }
 
     /**
+     * Available balance for the coverage period that CONTAINS $orDate —
+     * used to gate a reimbursement request against the correct coverage
+     * year (Coverage Year History) rather than always against whichever
+     * period happens to be "current" today. See ReimbursementController's
+     * GHP Reimbursement Rule.
+     *
+     * Delegates to calculate(), just resolving the right "as of" cutoff
+     * first: if $orDate's period is the current, still-running one, that's
+     * min(now(), period end) — the same cutoff calculate() uses by default
+     * — so an in-progress period's accrual stays correctly prorated by
+     * month. If $orDate's period has already fully elapsed, the cutoff
+     * becomes the period's own end date, so a past period's balance is
+     * evaluated as a complete cycle rather than staying frozen at whatever
+     * partial accrual it had on the day it ended.
+     */
+    public function availableBalanceFor(Member $member, CarbonInterface $orDate): array
+    {
+        [, $periodEnd] = $this->coveragePeriod($member->member_type, $orDate);
+
+        $now = Carbon::now();
+        $asOf = $now->lessThan($periodEnd) ? $now : $periodEnd->copy();
+
+        return $this->calculate($member, $asOf);
+    }
+
+    /**
      * Calculates and persists (or updates) the BenefitPeriod for a member's
      * current coverage year. Idempotent — safe to re-run.
      */
@@ -227,8 +318,15 @@ class BenefitAccrualService
         return BenefitPeriod::updateOrCreate(
             [
                 'member_id' => $member->id,
-                'from_date' => $result['from'],
-                'to_date' => $result['to'],
+                // Match on date-only strings, not the raw Carbon instances.
+                // to_date is a DATE column, but coveragePeriod() builds $to
+                // with ->endOfDay() (time = 23:59:59) for accurate "as of"
+                // comparisons elsewhere (see countAccruedMonths()). Passing
+                // that raw value here made updateOrCreate()'s lookup compare
+                // '...23:59:59' against MySQL's midnight-padded DATE value,
+                // never match, then hit the unique constraint on insert.
+                'from_date' => $result['from']->toDateString(),
+                'to_date' => $result['to']->toDateString(),
             ],
             [
                 'ghp_amount' => $result['ghp_amount'],

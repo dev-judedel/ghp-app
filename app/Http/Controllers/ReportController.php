@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Concerns\StreamsCsv;
 use App\Models\BenefitPeriod;
 use App\Models\Department;
 use App\Models\Division;
@@ -11,17 +12,28 @@ use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\Response as ResponseFacade;
 use Illuminate\View\View;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class ReportController extends Controller
 {
+    use StreamsCsv;
+
     public function index(): View
     {
+        // Plain Eloquent instead of raw SQL on purpose: the previous version
+        // used EXTRACT(YEAR FROM from_date)::int, which is PostgreSQL-only
+        // syntax (the '::int' cast doesn't exist in MySQL/SQLite) — this app
+        // runs on MySQL, so GET /reports has been throwing a SQL syntax
+        // error on every load. Same class of bug as the earlier member
+        // search 'ilike' issue. This version works on any driver.
         $coverageYears = BenefitPeriod::query()
-            ->selectRaw('DISTINCT EXTRACT(YEAR FROM from_date)::int as year')
-            ->orderByDesc('year')
-            ->pluck('year');
+            ->select('from_date')
+            ->get()
+            ->map(fn ($period) => $period->from_date->year)
+            ->unique()
+            ->sortDesc()
+            ->values();
 
         return view('reports.index', [
             'departments' => Department::orderBy('name')->get(),
@@ -85,7 +97,7 @@ class ReportController extends Controller
         return $pdf->download('annual-ghp-report-'.($year ?: 'latest').'.pdf');
     }
 
-    public function annualGhpCsv(Request $request): Response
+    public function annualGhpCsv(Request $request): StreamedResponse
     {
         $rows = $this->buildAnnualGhpRows($request);
         $year = $request->query('year');
@@ -154,7 +166,7 @@ class ReportController extends Controller
         return $pdf->download('reimbursement-report-'.$request->query('from').'-to-'.$request->query('to').'.pdf');
     }
 
-    public function reimbursementsCsv(Request $request): Response
+    public function reimbursementsCsv(Request $request): StreamedResponse
     {
         $reimbursements = $this->buildReimbursementsQuery($request);
 
@@ -199,29 +211,5 @@ class ReportController extends Controller
         ])->setPaper('a4', 'portrait');
 
         return $pdf->download("mdr-{$member->code}.pdf");
-    }
-
-    /**
-     * Streams a CSV using plain fputcsv() — no package needed (unlike
-     * XLSX, which would require another offline bootstrap round-trip for
-     * maatwebsite/excel). Fine for "export the numbers," which is the
-     * actual use case here.
-     */
-    private function streamCsv(string $filename, array $headers, Collection $rows): Response
-    {
-        return ResponseFacade::streamDownload(function () use ($headers, $rows) {
-            $handle = fopen('php://output', 'w');
-
-            // UTF-8 BOM so Excel doesn't mangle the ₱ sign or special characters.
-            fwrite($handle, "\xEF\xBB\xBF");
-
-            fputcsv($handle, $headers);
-
-            foreach ($rows as $row) {
-                fputcsv($handle, $row);
-            }
-
-            fclose($handle);
-        }, $filename, ['Content-Type' => 'text/csv']);
     }
 }

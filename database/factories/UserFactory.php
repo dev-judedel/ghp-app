@@ -30,6 +30,13 @@ class UserFactory extends Factory
             'email_verified_at' => now(),
             'password' => static::$password ??= Hash::make('password'),
             'remember_token' => Str::random(10),
+            // Explicit (not relying on the DB column default): factory-created
+            // models are handed directly to actingAs() in tests, which uses
+            // the in-memory object as-is with no DB re-fetch. A column
+            // default only applies at the database level, so leaving this
+            // out would silently make every factory user look "inactive" to
+            // anything checking $user->is_active in the same request/test.
+            'is_active' => true,
         ];
     }
 

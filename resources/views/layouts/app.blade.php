@@ -32,7 +32,14 @@
             <header class="topbar">
                 <h1>@yield('title', 'Dashboard')</h1>
                 <div class="topbar-user">
-                    <span>{{ auth()->user()->name }} &middot; {{ auth()->user()->role === 'admin' ? 'Admin' : 'Staff' }}</span>
+                    <a href="{{ route('profile.edit') }}" class="topbar-profile-link">
+                        @if (auth()->user()->profile_photo_path)
+                            <img src="{{ auth()->user()->profile_photo_url }}" alt="" class="avatar avatar-sm">
+                        @else
+                            <span class="avatar avatar-sm avatar-initials">{{ auth()->user()->initials }}</span>
+                        @endif
+                        <span>{{ auth()->user()->name }} &middot; {{ auth()->user()->role === 'admin' ? 'Admin' : 'Staff' }}</span>
+                    </a>
                     <form method="POST" action="{{ route('logout') }}">
                         @csrf
                         <button type="submit">Log out</button>

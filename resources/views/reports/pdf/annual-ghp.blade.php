@@ -15,10 +15,15 @@
         .footer { margin-top: 16px; font-size: 8px; color: #8FB3A9; }
         .badge-active { color: #2E7D4F; font-weight: bold; }
         .badge-inactive { color: #A6402C; font-weight: bold; }
+        .report-title { text-align: center; font-size: 15px; font-weight: bold; color: #0A3F37; text-transform: uppercase; letter-spacing: 0.04em; margin: 0 0 2px; }
+        hr.divider { border: none; border-top: 2px solid #0F5C50; margin: 0 0 14px; }
     </style>
 </head>
 <body>
-    <h1>Annual GHP Report</h1>
+    @include('reports.pdf.partials.company-header')
+
+    <p class="report-title">Annual GHP Report</p>
+    <hr class="divider">
     <div class="subtitle">
         Coverage year: {{ $year ?: 'Latest on record per member' }}
         &nbsp;&middot;&nbsp; Generated {{ $generatedAt->format('M d, Y g:i A') }}

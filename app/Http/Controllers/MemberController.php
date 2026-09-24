@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Requests\StoreMemberRequest;
 use App\Http\Requests\UpdateMemberRequest;
+use App\Http\Requests\UpdateMemberStatusRequest;
 use App\Models\Department;
 use App\Models\Division;
 use App\Models\Member;
@@ -14,7 +15,7 @@ use Illuminate\View\View;
 
 class MemberController extends Controller
 {
-    public function index(Request $request): View
+    public function index(Request $request, BenefitAccrualService $accrualService): View
     {
         $search = trim((string) $request->query('search', ''));
         $type = $request->query('type');           // 'employee' | 'agent' | null
@@ -22,26 +23,26 @@ class MemberController extends Controller
         $divisionId = $request->query('division');   // division id | null
         $status = $request->query('status', 'active'); // 'active' (default) | 'inactive' | 'all'
 
-        $members = Member::query()
+        $members = Member::filtered([
+            'search' => $search,
+            'type' => $type,
+            'department' => $departmentId,
+            'division' => $divisionId,
+            'status' => $status,
+        ])
             ->with(['division', 'department'])
-            ->when($search !== '', function ($query) use ($search) {
-                $query->where(function ($q) use ($search) {
-                    $q->where('code', 'ilike', "%{$search}%")
-                        ->orWhere('last_name', 'ilike', "%{$search}%")
-                        ->orWhere('first_name', 'ilike', "%{$search}%");
-                });
-            })
-            ->when($type === 'employee', fn ($query) => $query->employees())
-            ->when($type === 'agent', fn ($query) => $query->agents())
-            ->when($departmentId, fn ($query) => $query->where('department_id', $departmentId))
-            ->when($divisionId, fn ($query) => $query->where('division_id', $divisionId))
-            ->when($status === 'active', fn ($query) => $query->active())
-            ->when($status === 'inactive', fn ($query) => $query->inactive())
-            // $status === 'all' -> no filter applied, shows both
             ->orderBy('last_name')
             ->orderBy('first_name')
             ->paginate(25)
             ->withQueryString();
+
+        // Default Apply Date for the Add Member modal: the CURRENT GHP
+        // cycle's own start date, computed dynamically (never hard-coded to
+        // one year) via the same coveragePeriod() logic everything else in
+        // this app uses. Employee cycle (Apr–Mar) is used as the default
+        // regardless of which member type ends up selected in the form —
+        // it's just a suggested starting value, and stays fully editable.
+        [$currentCycleStart, $currentCycleEnd] = $accrualService->coveragePeriod(Member::MEMBER_TYPE_EMPLOYEE, now());
 
         $viewData = [
             'members' => $members,
@@ -52,6 +53,9 @@ class MemberController extends Controller
             'status' => $status,
             'departments' => Department::orderBy('name')->get(),
             'divisions' => Division::orderBy('member_type')->orderBy('name')->get(),
+            'defaultApplyDate' => $currentCycleStart,
+            'currentCycleStart' => $currentCycleStart,
+            'currentCycleEnd' => $currentCycleEnd,
         ];
 
         // Live search: the search box fires these requests as the user types
@@ -65,18 +69,29 @@ class MemberController extends Controller
         return view('members.index', $viewData);
     }
 
-    public function store(StoreMemberRequest $request): RedirectResponse
+    public function store(StoreMemberRequest $request, BenefitAccrualService $accrualService): RedirectResponse
     {
-        $member = Member::create($request->validated() + [
-            'is_active' => $request->boolean('is_active', true),
-        ]);
+        // Built as a mutable array (not $validated + [...]) on purpose:
+        // 'code' is now a validated key too, and array union (+) keeps the
+        // LEFT side's value on collisions — that would silently ignore this
+        // override whenever the admin left it blank.
+        $data = $request->validated();
+        $data['code'] = $request->filled('code') ? $data['code'] : Member::generateUniqueCode();
+        $data['is_active'] = $request->boolean('is_active', true);
+        // deduction_start_date is never accepted from the request (see
+        // StoreMemberRequest) — always derived from start_date, so it can
+        // never drift from the business rule regardless of what a client
+        // might try to submit.
+        $data['deduction_start_date'] = $accrualService->resolveDeductionStartDate($data['start_date']);
+
+        $member = Member::create($data);
 
         return redirect()
             ->route('members.show', $member)
             ->with('status', "Member {$member->code} created.");
     }
 
-    public function show(Member $member): View
+    public function show(Member $member, BenefitAccrualService $accrualService): View
     {
         $member->load([
             'division',
@@ -89,12 +104,17 @@ class MemberController extends Controller
 
         $currentBenefitPeriod = $member->benefitPeriods->first();
 
+        [$currentCycleStart, $currentCycleEnd] = $accrualService->coveragePeriod($member->member_type, now());
+
         return view('members.show', [
             'member' => $member,
             'currentBenefitPeriod' => $currentBenefitPeriod,
             'departments' => Department::orderBy('name')->get(),
             'divisions' => Division::orderBy('member_type')->orderBy('name')->get(),
             'activityFeed' => $this->buildMemberActivityFeed($member),
+            'currentCycleStart' => $currentCycleStart,
+            'currentCycleEnd' => $currentCycleEnd,
+            'requiredGhp' => $member->deduction_start_date ? $accrualService->requiredAmountForCycle($member) : null,
         ]);
     }
 
@@ -120,15 +140,43 @@ class MemberController extends Controller
         return $activities->sortByDesc('created_at')->take(30)->values();
     }
 
-    public function update(UpdateMemberRequest $request, Member $member): RedirectResponse
+    public function update(UpdateMemberRequest $request, Member $member, BenefitAccrualService $accrualService): RedirectResponse
     {
         $member->update($request->validated() + [
             'is_active' => $request->boolean('is_active', false),
+            'deduction_start_date' => $accrualService->resolveDeductionStartDate($request->validated('start_date')),
         ]);
 
         return redirect()
             ->route('members.show', $member)
             ->with('status', "Member {$member->code} updated.");
+    }
+
+    /**
+     * Toggles Active <-> Inactive for a single member — the per-row Action
+     * column on the table. Separate from the bulk activate/deactivate in
+     * MemberBulkActionController, which acts on multiple checked members
+     * at once; this always affects exactly the one $member passed in.
+     *
+     * Deactivating requires a resignation_date (validated server-side by
+     * UpdateMemberStatusRequest — the date shown to the admin in the modal
+     * is never trusted as-is without that validation). Reactivating always
+     * clears it back to NULL, regardless of what (if anything) was submitted.
+     */
+    public function updateStatus(UpdateMemberStatusRequest $request, Member $member): RedirectResponse
+    {
+        abort_unless(auth()->user()->isAdmin(), 403);
+
+        $activating = ! $member->is_active;
+
+        $member->update([
+            'is_active' => $activating,
+            'resignation_date' => $activating ? null : $request->validated('resignation_date'),
+        ]);
+
+        return redirect()
+            ->route('members.index', $request->only(['search', 'type', 'department', 'division', 'status']))
+            ->with('status', 'Member '.$member->code.' '.($activating ? 'reactivated.' : 'deactivated.'));
     }
 
     public function generateBenefitPeriod(Member $member, BenefitAccrualService $accrualService): RedirectResponse
