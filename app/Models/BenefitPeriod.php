@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -13,6 +14,7 @@ use Spatie\Activitylog\Traits\LogsActivity;
 #[Fillable([
     'member_id', 'from_date', 'to_date', 'ghp_amount', 'ghp_available',
     'ghp_used', 'member_type', 'remarks', 'division_id', 'department_id',
+    'is_voided', 'voided_at', 'voided_reason', 'voided_by',
 ])]
 class BenefitPeriod extends Model
 {
@@ -27,6 +29,8 @@ class BenefitPeriod extends Model
             'ghp_available' => 'decimal:2',
             'ghp_used' => 'decimal:2',
             'member_type' => 'integer',
+            'is_voided' => 'boolean',
+            'voided_at' => 'datetime',
         ];
     }
 
@@ -43,6 +47,40 @@ class BenefitPeriod extends Model
     public function department(): BelongsTo
     {
         return $this->belongsTo(Department::class);
+    }
+
+    public function voidedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'voided_by');
+    }
+
+    public function scopeOngoing(Builder $query): Builder
+    {
+        return $query->where('is_voided', false);
+    }
+
+    public function scopeVoided(Builder $query): Builder
+    {
+        return $query->where('is_voided', true);
+    }
+
+    /**
+     * Marks this period as voided — see BenefitPeriodController::void().
+     * Unlike Reimbursement::void(), there is deliberately no unvoid():
+     * the only ways back are Delete (while still voided) or generating a
+     * fresh active row for the same cycle (see
+     * MemberController::generateBenefitPeriod() and
+     * BenefitAccrualService::accrue(), both of which ignore voided rows
+     * when deciding whether the current cycle already has an active one).
+     */
+    public function void(string $reason, ?User $by = null): void
+    {
+        $this->update([
+            'is_voided' => true,
+            'voided_at' => now(),
+            'voided_reason' => $reason,
+            'voided_by' => $by?->id,
+        ]);
     }
 
     /**
@@ -69,7 +107,7 @@ class BenefitPeriod extends Model
     {
         return LogOptions::defaults()
             ->useLogName('benefit_period')
-            ->logOnly(['from_date', 'to_date', 'ghp_amount', 'ghp_used', 'ghp_available'])
+            ->logOnly(['from_date', 'to_date', 'ghp_amount', 'ghp_used', 'ghp_available', 'is_voided', 'voided_reason'])
             ->logOnlyDirty()
             ->dontSubmitEmptyLogs();
     }

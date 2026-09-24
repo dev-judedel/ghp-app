@@ -11,6 +11,7 @@ use App\Models\Member;
 use App\Services\BenefitAccrualService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\View\View;
 
 class MemberController extends Controller
@@ -102,13 +103,29 @@ class MemberController extends Controller
             'amountAdjustments' => fn ($q) => $q->orderByDesc('requested_at'),
         ]);
 
-        $currentBenefitPeriod = $member->benefitPeriods->first();
+        // Excludes voided periods (see BenefitPeriod::void()) — a voided
+        // row must never be shown as the member's current balance, and
+        // must never be mistaken for the most recent REAL period on record.
+        $currentBenefitPeriod = $member->benefitPeriods->first(fn ($period) => ! $period->is_voided);
 
         [$currentCycleStart, $currentCycleEnd] = $accrualService->coveragePeriod($member->member_type, now());
+
+        // Distinct from $currentBenefitPeriod above: that's just the MOST
+        // RECENT active period on record (still shown as-is on the Benefit
+        // balance card, even if stale from last cycle). This is
+        // specifically "does an ACTIVE period for THIS cycle's exact date
+        // range already exist" — what gates the Generate button (see
+        // generateBenefitPeriod()). A voided period never counts here —
+        // that's the whole point of voiding: it makes the Generate button
+        // available again for the same cycle.
+        $currentCyclePeriod = $member->benefitPeriods->first(
+            fn ($period) => ! $period->is_voided && $period->from_date->isSameDay($currentCycleStart) && $period->to_date->isSameDay($currentCycleEnd)
+        );
 
         return view('members.show', [
             'member' => $member,
             'currentBenefitPeriod' => $currentBenefitPeriod,
+            'currentCyclePeriod' => $currentCyclePeriod,
             'departments' => Department::orderBy('name')->get(),
             'divisions' => Division::orderBy('member_type')->orderBy('name')->get(),
             'activityFeed' => $this->buildMemberActivityFeed($member),
@@ -179,6 +196,26 @@ class MemberController extends Controller
             ->with('status', 'Member '.$member->code.' '.($activating ? 'reactivated.' : 'deactivated.'));
     }
 
+    /**
+     * ================================================================
+     * ONE GHP CYCLE -> ONE BENEFIT PERIOD.
+     * ================================================================
+     * Generates the CURRENT cycle's period exactly once. If one already
+     * exists for this member's current cycle (Employees Apr–Mar, Agents
+     * Jun–May — see BenefitAccrualService::coveragePeriod()), the request
+     * is rejected rather than silently refreshing it again — this is the
+     * backend half of the Generate button's "disabled until the cycle
+     * ends" behavior (members/show.blade.php computes the same
+     * check to grey out the button; this is the authority, not that).
+     *
+     * Wrapped in a locked transaction, same pattern as
+     * ReimbursementController::assertWithinBalance() — makes the "does it
+     * already exist" check and the insert atomic, so two nearly-simultaneous
+     * clicks (or a duplicated manual request) can't both pass the check and
+     * create two rows. The unique index on
+     * benefit_periods(member_id, from_date, to_date) is the last-resort
+     * backstop under that.
+     */
     public function generateBenefitPeriod(Member $member, BenefitAccrualService $accrualService): RedirectResponse
     {
         abort_unless(auth()->user()->isAdmin(), 403);
@@ -193,12 +230,44 @@ class MemberController extends Controller
                 ->with('status', "Can't generate a benefit period — {$member->code} has no deduction start date on file.");
         }
 
-        $member->loadMissing('dependents', 'reimbursements', 'benefitPeriods');
-        $period = $accrualService->accrue($member);
+        [$cycleStart, $cycleEnd] = $accrualService->coveragePeriod($member->member_type, now());
+
+        $result = DB::transaction(function () use ($member, $accrualService, $cycleStart, $cycleEnd) {
+            $lockedMember = Member::whereKey($member->id)->lockForUpdate()->firstOrFail();
+
+            // Voided periods (see BenefitPeriod::void()) never count as
+            // "already generated" — that's what lets the Generate button
+            // become available again after a mistaken period is voided.
+            $existing = $lockedMember->benefitPeriods()
+                ->where('is_voided', false)
+                ->whereDate('from_date', $cycleStart->toDateString())
+                ->whereDate('to_date', $cycleEnd->toDateString())
+                ->first();
+
+            if ($existing) {
+                return ['created' => false, 'period' => $existing];
+            }
+
+            $lockedMember->loadMissing('dependents', 'reimbursements', 'benefitPeriods');
+
+            return ['created' => true, 'period' => $accrualService->accrue($lockedMember)];
+        });
+
+        $period = $result['period'];
+
+        if (! $result['created']) {
+            return redirect()->route('members.show', $member)
+                ->with('status', sprintf(
+                    'Benefit period already generated for the current GHP cycle (%s – %s) — the Generate button stays disabled until this cycle ends on %s.',
+                    $cycleStart->format('M d, Y'),
+                    $cycleEnd->format('M d, Y'),
+                    $cycleEnd->format('M d, Y'),
+                ));
+        }
 
         return redirect()->route('members.show', $member)
             ->with('status', sprintf(
-                'Benefit period %s – %s generated: ₱%s available (₱%s used of ₱%s).',
+                'Benefit period generated successfully: %s – %s. ₱%s available (₱%s used of ₱%s).',
                 $period->from_date->format('M d, Y'),
                 $period->to_date->format('M d, Y'),
                 number_format($period->ghp_available, 2),

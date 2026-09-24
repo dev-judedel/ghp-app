@@ -5,7 +5,7 @@ Use this as a quick reference before starting new work — check "Not Implemente
 before assuming something doesn't exist, and check "Known Issues" before
 re-diagnosing a problem that's already been flagged.
 
-**Last updated:** 2026-09-21
+**Last updated:** 2026-09-24
 
 ---
 
@@ -92,6 +92,27 @@ for Excel export — is no longer needed; that feature was built and then remove
 - **Tests:** `BenefitAccrualServiceTest.php`
 - **Not yet run** — fixed from reading the service and test code directly; run `php artisan test` to confirm.
 
+### 2.11 Benefit Period Year History — Void + Delete + search/filter
+- Added a **Void** action for an active/ongoing Benefit Period (member page → "Benefit periods" card): marks it `is_voided` instead of deleting it, so it stays on file for history/audit but no longer counts as "already generated" for that cycle — **"Generate this year's benefit period" becomes available again immediately**, and generating creates a brand-new active row alongside the voided one (never two active rows for the same cycle).
+- Added a **Delete** action, but **only for already-voided** periods — enforced server-side (`BenefitPeriodController::destroy()`, `422` if the target isn't voided), not just by hiding the button. Safe to hard-delete: `reimbursements.benefit_period_id` is `nullOnDelete()`, and `benefit_ledger` has no FK to `benefit_periods` at all — no reimbursement, deduction, or member record is ever touched.
+- Added a **search box + Status filter** (All / Ongoing / Voided) above the table. Implemented client-side (JS filtering of the already-loaded rows) rather than a server round-trip — this table is small (one row per member per cycle), and the destructive-action rules that actually matter (only-voided-can-be-deleted, no-duplicate-active) are enforced server-side regardless of the filter UI.
+- **Files:** migration `2026_09_24_100000_add_void_fields_to_benefit_periods_table.php` (adds `is_voided`/`voided_at`/`voided_reason`/`voided_by`; **drops** the old `unique(member_id, from_date, to_date)` constraint — see below), `BenefitPeriod.php` (`void()`, `scopeOngoing`/`scopeVoided`, `voidedBy()`), `VoidBenefitPeriodRequest.php`, `BenefitPeriodController::void()`/`destroy()`, two new routes (`members.benefit-periods.void`/`.destroy`), `members/show.blade.php` (Status + Action + Created columns, search/filter bar, Void/Delete confirmation modals).
+- **Why the unique constraint had to go:** it assumed exactly one row could ever exist per member+cycle, which Void deliberately breaks (a voided row and a later regenerated active row now legitimately share the same `from_date`/`to_date`). "Only one ACTIVE row per member+cycle" is enforced at the application layer instead, inside the same locked transaction `generateBenefitPeriod()` already used before this change — same pattern as `ReimbursementController::assertWithinBalance()`.
+- **Follow-on fixes required by the same change** (so voiding actually works end-to-end, not just the button): `BenefitAccrualService::accrue()`'s `updateOrCreate()` match now also requires `is_voided = false`, so it can never silently "resurrect" a voided row with fresh numbers — it creates a new active row instead, whenever one doesn't already exist (first-time generation and post-void regeneration are now the same code path). `calculate()`'s prior-period lookup (10% carry-forward) and `ReimbursementController::linkToBenefitPeriod()`'s period match both now also exclude voided rows, for the same reason. `MemberController::show()`'s `$currentBenefitPeriod`/`$currentCyclePeriod` both now skip voided rows too, so the Benefit balance card and the reimbursement modal's "Available GHP amount" never show a voided period's stale figures.
+- **Tests:** `BenefitPeriodManagementTest.php` — void (admin-only, requires a reason, can't double-void, 404 for another member's period), the full void-then-regenerate workflow (voided row + new active row both present, only one active), the member page's current-period display skipping a voided one, delete (voided-only, 422 on an active one, admin-only, 404 for another member's period, doesn't cascade-delete a linked reimbursement).
+- **Not yet run** — written from reading the controllers/models/service directly; run `php artisan migrate` (new migration) then `php artisan test --filter=BenefitPeriodManagementTest` to confirm. The `ReimbursementManagementTest`/`AmountAdjustmentManagementTest` suites are also worth re-running since `BenefitAccrualService::calculate()`/`accrue()` changed.
+
+### 2.12 Dependent eligibility now waits for the next benefit period
+- **Business rule changed (intentional):** adding a dependent no longer raises the member's GHP amount immediately. Previously, `DependentController::store()` recalculated `members.ghp_amount` the instant a dependent was saved, based only on the age/relation rule (`Dependent::is_eligible`) — no awareness of *when* it was added. Now a dependent added during an ongoing benefit period is recorded and shown right away, but only starts counting toward the higher (₱4,200) rate once the *next* coverage cycle begins.
+- **How it works:** `dependents` gets two new nullable columns, `date_added` and `eligibility_date`. `DependentController::store()` sets `date_added` = today and `eligibility_date` = the start of the *next* coverage cycle (via new `BenefitAccrualService::resolveDependentEligibilityDate()`, which reuses the existing `coveragePeriod()` Apr–Mar/Jun–May logic). `BenefitAccrualService::resolveGhpAmount()` now takes an optional `$asOf` and checks each dependent through new `Dependent::isGhpEligibleAsOf($asOf)` (age/relation rule AND, if set, `$asOf >= eligibility_date`) instead of the age rule alone. `calculate()` passes its own `$asOf`; `requiredAmountForCycle()` evaluates at the cycle's own end date, since eligibility is an all-or-nothing-per-cycle rule, not a daily one.
+- **Nothing retroactive, nothing backfilled on purpose:** `eligibility_date` is left `NULL` for every dependent already on file, and for any dependent created directly via Eloquent rather than through the real "Add dependent" form (tests, factories, `ImportLegacyGhpData`). `isGhpEligibleAsOf()` treats `NULL` as "not time-gated" — always eligible, exactly like before this change. Only dependents added through the app from now on get the pending-until-next-cycle treatment. No migration backfill was needed as a result.
+- **Why no `benefit_period_id` FK on Dependent:** eligibility is purely calendar/cycle-boundary math (same Apr–Mar/Jun–May logic as everything else), independent of whether a `BenefitPeriod` row has actually been generated yet for that cycle — linking to a specific row would have created null-period edge cases for no benefit.
+- **UI:** Dependents table on the member page now shows Date added, a Status badge (Eligible / Pending Eligibility / Not eligible), and Eligible period columns, plus a note on the Add/Edit dependent modal.
+- **One existing test intentionally changed:** `MemberBenefitSetupTest::test_adding_an_eligible_dependent_after_saving_recalculates_ghp_amount_without_resetting_dates` asserted the *old* (now-incorrect) immediate-bump behavior — replaced with `test_adding_a_dependent_mid_cycle_does_not_immediately_raise_the_ghp_amount` plus a companion test proving the same dependent becomes eligible once evaluated in the next cycle. All other dependent-touching tests (`AmountAdjustmentManagementTest`, `BenefitAccrualServiceTest`'s existing cases) create dependents directly via Eloquent, so they're unaffected by the `NULL`-safe default.
+- **Files:** migration `2026_09_24_110000_add_eligibility_fields_to_dependents_table.php`, `Dependent.php` (`date_added`/`eligibility_date` casts+fillable, `isGhpEligibleAsOf()`, `eligibility_status` accessor), `BenefitAccrualService.php` (`resolveGhpAmount($asOf)`, `resolveDependentEligibilityDate()`, `calculate()`/`requiredAmountForCycle()` updated), `DependentController::store()`, `members/show.blade.php` (Dependents table + modal hint).
+- **Tests:** `MemberBenefitSetupTest.php` (updated + new), `BenefitAccrualServiceTest.php` (new: eligibility-date calculation for both member types, gating before/after the date, multiple-pending-dependents, `NULL`-eligibility-date safety net).
+- **Not yet run** — written from reading the controllers/models/service/views directly; run `php artisan migrate` (new migration) then `php artisan test` to confirm, paying particular attention to `MemberBenefitSetupTest` and `BenefitAccrualServiceTest`.
+
 ### 2.7 Removed (per explicit request)
 - **Member export (CSV/PDF/Excel)**: was built in full, then removed at your request. Routes, view buttons, and the controller/PDF view were deleted from active use — the controller and PDF view are sitting in `_removed-by-claude/` at the project root (I can't truly delete files, only move/overwrite them; delete that folder yourself whenever convenient).
 - The shared `StreamsCsv` trait was **kept** — it's still used by the pre-existing Reports page exports (Annual GHP, Reimbursements), which were never part of this request.
@@ -145,7 +166,7 @@ app/
       StoreMemberRequest.php, UpdateMemberRequest.php
       StoreDepartmentRequest.php, UpdateDepartmentRequest.php  (pre-existing)
       Concerns/HasEmailRule.php
-  Models/User.php, Member.php, Department.php, Division.php
+  Models/User.php, Member.php, Department.php, Division.php, BenefitPeriod.php
   Support/UniqueCodeGenerator.php
 
 resources/views/
@@ -155,13 +176,14 @@ resources/views/
   layouts/app.blade.php
 
 database/migrations/  (profile_photo_path, users.is_active, users.user_code,
-                        members.email, departments.division_id)
+                        members.email, departments.division_id,
+                        benefit_periods void fields + dropped unique constraint)
 
 tests/Feature/
   ProfileTest.php, MemberSearchTest.php, UserManagementTest.php,
   MemberManagementTest.php, DepartmentManagementTest.php,
   ReimbursementManagementTest.php, AmountAdjustmentManagementTest.php,
-  DataQualityReportTest.php
+  DataQualityReportTest.php, BenefitPeriodManagementTest.php
 
 _removed-by-claude/   (orphaned export controller + PDF view — safe to delete)
 ```

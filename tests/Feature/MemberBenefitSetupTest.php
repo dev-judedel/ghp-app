@@ -301,11 +301,20 @@ class MemberBenefitSetupTest extends TestCase
 
     // ---- Dependent eligibility recalculation (Doc 6 §4/§7) ----
 
-    public function test_adding_an_eligible_dependent_after_saving_recalculates_ghp_amount_without_resetting_dates(): void
+    /**
+     * GHP Dependent Eligibility Rule: adding a dependent mid-cycle must
+     * NOT raise the member's GHP amount for the coverage period already
+     * in progress — see DependentController::store() /
+     * BenefitAccrualService::resolveDependentEligibilityDate(). The
+     * dependent is recorded immediately (name, relation, dates all save
+     * normally); only the amount bump is deferred to the next cycle.
+     */
+    public function test_adding_a_dependent_mid_cycle_does_not_immediately_raise_the_ghp_amount(): void
     {
         $admin = $this->admin();
         $member = Member::factory()->create([
             'civil_status' => Member::CIVIL_STATUS_SINGLE,
+            'member_type' => Member::MEMBER_TYPE_EMPLOYEE,
             'ghp_amount' => 3600,
             'ghp_amount_is_manual' => false,
             'deduction_start_date' => '2026-07-01',
@@ -314,17 +323,66 @@ class MemberBenefitSetupTest extends TestCase
 
         $this->actingAs($admin)->post(route('members.dependents.store', $member), [
             'name' => 'Maria Dela Cruz',
-            'relation' => 'Spouse', // always eligible
+            'relation' => 'Spouse', // always eligible by age/relation
         ]);
 
         $member->refresh();
 
-        $this->assertSame(4200.0, (float) $member->ghp_amount);
+        // Still the base rate — the dependent does not count yet.
+        $this->assertSame(3600.0, (float) $member->ghp_amount);
         $this->assertSame('2026-07-01', $member->deduction_start_date->toDateString());
         $this->assertSame('2026-06-01', $member->start_date->toDateString());
         // Exactly one member, one dependent — no duplicate records.
         $this->assertSame(1, Member::count());
         $this->assertSame(1, $member->dependents()->count());
+
+        $dependent = $member->dependents()->first();
+        $this->assertNotNull($dependent->date_added);
+        $this->assertNotNull($dependent->eligibility_date);
+        $this->assertSame('pending', $dependent->eligibility_status);
+    }
+
+    /**
+     * The same dependent DOES count once evaluated as of a date inside the
+     * NEXT coverage cycle — this is what actually drives the higher
+     * amount once "Generate this year's benefit period" (or the daily
+     * ghp:auto-generate-benefit-periods job) runs for that cycle.
+     */
+    public function test_a_dependent_added_mid_cycle_becomes_eligible_in_the_next_cycle(): void
+    {
+        $admin = $this->admin();
+        $member = Member::factory()->create([
+            'member_type' => Member::MEMBER_TYPE_EMPLOYEE,
+            'ghp_amount' => 3600,
+            'ghp_amount_is_manual' => false,
+            'deduction_start_date' => '2026-07-01',
+            'start_date' => '2026-06-01',
+        ]);
+
+        // Added June 2026 -> current cycle is Apr 2026-Mar 2027.
+        $this->actingAs($admin)->post(route('members.dependents.store', $member), [
+            'name' => 'Maria Dela Cruz',
+            'relation' => 'Spouse',
+        ]);
+
+        $dependent = $member->fresh(['dependents'])->dependents->first();
+
+        // Eligible starting the next cycle: Apr 1, 2027.
+        $this->assertSame('2027-04-01', $dependent->eligibility_date->toDateString());
+
+        $accrual = app(BenefitAccrualService::class);
+
+        // Still pending for the remainder of the current cycle.
+        $this->assertSame(3600.0, $accrual->resolveGhpAmount($member->fresh(['dependents']), Carbon::parse('2027-03-31')));
+
+        // Eligible the moment the next cycle begins.
+        $this->assertSame(4200.0, $accrual->resolveGhpAmount($member->fresh(['dependents']), Carbon::parse('2027-04-01')));
+
+        // eligibility_status (see Dependent::eligibilityStatus()) is
+        // evaluated against wall-clock now(), not an arbitrary $asOf, so
+        // it can only be asserted 'pending' here — the real test-run date
+        // hasn't reached this dependent's 2027-04-01 eligibility date yet.
+        $this->assertSame('pending', $dependent->fresh()->eligibility_status);
     }
 
     public function test_removing_the_only_eligible_dependent_reverts_ghp_amount_to_the_base_rate(): void

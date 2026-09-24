@@ -107,6 +107,123 @@ class BenefitAccrualServiceTest extends TestCase
         $this->assertSame(4200.0, $this->service->resolveGhpAmount($member->fresh(['dependents'])));
     }
 
+    // ---- Dependent eligibility gating (added mid-cycle -> next cycle) ----
+
+    /**
+     * Primary worked example from the spec: cycle Apr 2026-Mar 2027,
+     * dependent added June 2026 -> eligible starting Apr 1, 2027.
+     */
+    public function test_dependent_eligibility_date_is_the_start_of_the_next_cycle(): void
+    {
+        $eligibilityDate = $this->service->resolveDependentEligibilityDate(
+            Member::MEMBER_TYPE_EMPLOYEE,
+            Carbon::parse('2026-06-15')
+        );
+
+        $this->assertSame('2027-04-01', $eligibilityDate->toDateString());
+    }
+
+    /**
+     * Edge case 2: a dependent added right at the start of a NEW period
+     * still follows that new period's own eligibility rules -> pending
+     * for the whole of that cycle, eligible only the cycle after.
+     */
+    public function test_dependent_added_at_the_start_of_a_new_cycle_is_pending_for_that_whole_cycle(): void
+    {
+        $eligibilityDate = $this->service->resolveDependentEligibilityDate(
+            Member::MEMBER_TYPE_EMPLOYEE,
+            Carbon::parse('2027-04-10')
+        );
+
+        $this->assertSame('2028-04-01', $eligibilityDate->toDateString());
+    }
+
+    public function test_agent_dependent_eligibility_date_follows_the_agent_jun_may_cycle(): void
+    {
+        $eligibilityDate = $this->service->resolveDependentEligibilityDate(
+            Member::MEMBER_TYPE_AGENT,
+            Carbon::parse('2026-09-01')
+        );
+
+        $this->assertSame('2027-06-01', $eligibilityDate->toDateString());
+    }
+
+    /**
+     * A dependent with an eligibility_date in the future does not count
+     * toward the higher GHP amount when evaluated before that date, but
+     * does once evaluated on/after it -- this is the mechanism
+     * DependentController::store() relies on (see resolveGhpAmount()'s
+     * $asOf parameter).
+     */
+    public function test_ghp_amount_ignores_a_pending_dependent_until_its_eligibility_date(): void
+    {
+        $member = Member::factory()->create();
+
+        Dependent::factory()->for($member)->create([
+            'relation' => 'Spouse',
+            'birthdate' => Carbon::now()->subYears(30),
+            'date_added' => '2026-06-15',
+            'eligibility_date' => '2027-04-01',
+        ]);
+
+        $member->load('dependents');
+
+        $this->assertSame(3600.0, $this->service->resolveGhpAmount($member, Carbon::parse('2027-03-31')));
+        $this->assertSame(4200.0, $this->service->resolveGhpAmount($member, Carbon::parse('2027-04-01')));
+    }
+
+    /**
+     * Case 3: multiple dependents added mid-cycle all stay pending
+     * together -- the amount never bumps twice, and never bumps early
+     * just because more than one was added.
+     */
+    public function test_multiple_pending_dependents_do_not_double_count_or_bump_early(): void
+    {
+        $member = Member::factory()->create();
+
+        Dependent::factory()->for($member)->create([
+            'relation' => 'Son',
+            'birthdate' => Carbon::now()->subYears(5),
+            'date_added' => '2026-06-15',
+            'eligibility_date' => '2027-04-01',
+        ]);
+
+        Dependent::factory()->for($member)->create([
+            'relation' => 'Daughter',
+            'birthdate' => Carbon::now()->subYears(3),
+            'date_added' => '2026-08-01',
+            'eligibility_date' => '2027-04-01',
+        ]);
+
+        $member->load('dependents');
+
+        $this->assertSame(3600.0, $this->service->resolveGhpAmount($member, Carbon::parse('2027-03-31')));
+        $this->assertSame(4200.0, $this->service->resolveGhpAmount($member, Carbon::parse('2027-04-01')));
+    }
+
+    /**
+     * A dependent with no eligibility_date at all (every dependent that
+     * predates this feature, or that was created directly rather than
+     * through DependentController::store()) is never time-gated -- it
+     * counts immediately, exactly like before this feature existed.
+     */
+    public function test_a_dependent_with_no_eligibility_date_is_never_time_gated(): void
+    {
+        $member = Member::factory()->create();
+
+        Dependent::factory()->for($member)->create([
+            'relation' => 'Spouse',
+            'birthdate' => Carbon::now()->subYears(30),
+            'date_added' => null,
+            'eligibility_date' => null,
+        ]);
+
+        $member->load('dependents');
+
+        $this->assertSame(4200.0, $this->service->resolveGhpAmount($member, Carbon::parse('2000-01-01')));
+        $this->assertSame(4200.0, $this->service->resolveGhpAmount($member, Carbon::parse('2099-01-01')));
+    }
+
     public function test_contribution_tier_is_75_with_no_dependents(): void
     {
         $member = Member::factory()->create();

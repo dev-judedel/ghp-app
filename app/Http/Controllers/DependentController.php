@@ -7,17 +7,37 @@ use App\Models\Dependent;
 use App\Models\Member;
 use App\Services\BenefitAccrualService;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Support\Carbon;
 
 class DependentController extends Controller
 {
+    /**
+     * ================================================================
+     * GHP Dependent Eligibility Rule
+     * ================================================================
+     * Adding a dependent never raises the member's GHP amount right away.
+     * date_added is recorded as today, and eligibility_date is set to the
+     * START OF THE NEXT coverage cycle (see BenefitAccrualService::
+     * resolveDependentEligibilityDate()) — the dependent is saved and
+     * shown immediately (Dependents card), but Dependent::isGhpEligibleAsOf()
+     * won't return true for it until $asOf reaches that date. syncGhpAmount()
+     * below still recomputes members.ghp_amount right after saving, exactly
+     * as before — it just now correctly stays at the base rate until the
+     * next cycle, instead of the previous behavior of bumping immediately.
+     */
     public function store(StoreDependentRequest $request, Member $member, BenefitAccrualService $accrualService): RedirectResponse
     {
-        $member->dependents()->create($request->validated());
+        $today = Carbon::now();
+
+        $member->dependents()->create($request->validated() + [
+            'date_added' => $today->toDateString(),
+            'eligibility_date' => $accrualService->resolveDependentEligibilityDate($member->member_type, $today)->toDateString(),
+        ]);
 
         $this->syncGhpAmount($member, $accrualService);
 
         return redirect()->route('members.show', $member)
-            ->with('status', "Dependent added for {$member->code}.");
+            ->with('status', "Dependent added for {$member->code}. Eligible for the higher GHP amount starting the next coverage cycle.");
     }
 
     public function update(StoreDependentRequest $request, Member $member, Dependent $dependent, BenefitAccrualService $accrualService): RedirectResponse

@@ -7,10 +7,11 @@ use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Carbon\CarbonInterface;
 use Spatie\Activitylog\LogOptions;
 use Spatie\Activitylog\Traits\LogsActivity;
 
-#[Fillable(['member_id', 'name', 'relation', 'birthdate'])]
+#[Fillable(['member_id', 'name', 'relation', 'birthdate', 'date_added', 'eligibility_date'])]
 class Dependent extends Model
 {
     use HasFactory, LogsActivity;
@@ -30,6 +31,8 @@ class Dependent extends Model
     {
         return [
             'birthdate' => 'date',
+            'date_added' => 'date',
+            'eligibility_date' => 'date',
         ];
     }
 
@@ -46,6 +49,10 @@ class Dependent extends Model
     /**
      * Mirrors the legacy eligibility rule: non-child dependents are always
      * eligible; child-relation dependents are eligible only under age 21.
+     *
+     * NOTE: this is the age/relation rule only — it says nothing about
+     * *when* the dependent becomes eligible to actually raise the GHP
+     * amount. See eligibility_date / isGhpEligibleAsOf() for that.
      */
     protected function isEligible(): Attribute
     {
@@ -58,11 +65,60 @@ class Dependent extends Model
         });
     }
 
+    /**
+     * Whether this dependent counts toward the higher (4,200) GHP amount
+     * as of a given date — combines the existing age/relation rule with
+     * the "added mid-cycle doesn't count until the next benefit period"
+     * rule (see BenefitAccrualService::resolveDependentEligibilityDate()).
+     *
+     * A NULL eligibility_date means "not time-gated" — every dependent on
+     * file before this feature existed, and any dependent created
+     * directly (factories/tests/legacy import) rather than through
+     * DependentController::store(), is always eligible per the age rule
+     * alone, exactly as before. Only dependents added through the real
+     * "Add dependent" form have an eligibility_date, and therefore only
+     * those are gated by it.
+     */
+    public function isGhpEligibleAsOf(CarbonInterface $asOf): bool
+    {
+        if (! $this->is_eligible) {
+            return false;
+        }
+
+        if ($this->eligibility_date === null) {
+            return true;
+        }
+
+        return $asOf->greaterThanOrEqualTo($this->eligibility_date);
+    }
+
+    /**
+     * Display-only status for the Dependents table: 'eligible',
+     * 'pending' (added this cycle, waiting for the next one), or
+     * 'not_eligible' (fails the age/relation rule regardless of timing).
+     * Always evaluated as of today — for the GHP-amount-affecting
+     * decision as of an arbitrary date, use isGhpEligibleAsOf() instead.
+     */
+    protected function eligibilityStatus(): Attribute
+    {
+        return Attribute::get(function () {
+            if (! $this->is_eligible) {
+                return 'not_eligible';
+            }
+
+            if ($this->eligibility_date !== null && now()->lessThan($this->eligibility_date)) {
+                return 'pending';
+            }
+
+            return 'eligible';
+        });
+    }
+
     public function getActivitylogOptions(): LogOptions
     {
         return LogOptions::defaults()
             ->useLogName('dependent')
-            ->logOnly(['member_id', 'name', 'relation', 'birthdate'])
+            ->logOnly(['member_id', 'name', 'relation', 'birthdate', 'eligibility_date'])
             ->logOnlyDirty()
             ->dontSubmitEmptyLogs();
     }

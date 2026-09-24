@@ -111,18 +111,45 @@ class BenefitAccrualService
      * through future benefit period generation, rather than being
      * silently recalculated back to 3600/4200 the next time dependents
      * change or "Generate benefit period" is clicked.
+     *
+     * $asOf gates each dependent through Dependent::isGhpEligibleAsOf() —
+     * a dependent added mid-cycle (via DependentController::store(), which
+     * sets eligibility_date to the START of the NEXT coverage cycle) does
+     * NOT count until $asOf reaches that date. Defaults to now() when
+     * omitted, which is what every pre-existing caller effectively did
+     * before this parameter existed (dependent eligibility used to have
+     * no time component at all).
      */
-    public function resolveGhpAmount(Member $member): float
+    public function resolveGhpAmount(Member $member, ?CarbonInterface $asOf = null): float
     {
         if ($member->ghp_amount_is_manual) {
             return (float) $member->ghp_amount;
         }
 
+        $asOf = $asOf ?? Carbon::now();
+
         $hasEligibleDependent = $member->dependents->contains(
-            fn ($dependent) => $dependent->is_eligible
+            fn ($dependent) => $dependent->isGhpEligibleAsOf($asOf)
         );
 
         return $hasEligibleDependent ? self::DEPENDENT_GHP_AMOUNT : self::BASE_GHP_AMOUNT;
+    }
+
+    /**
+     * The first day of the coverage cycle AFTER the one containing
+     * $dateAdded — this is when a dependent added mid-cycle becomes
+     * eligible for the higher GHP amount (see Dependent::eligibility_date
+     * / isGhpEligibleAsOf()). A dependent added on any day of cycle N is
+     * pending for the rest of cycle N and eligible starting cycle N+1,
+     * regardless of how early or late in cycle N they were added — there
+     * is no partial-cycle credit, matching how ghp_amount itself is a
+     * flat per-cycle rate rather than something accrued per dependent.
+     */
+    public function resolveDependentEligibilityDate(int $memberType, CarbonInterface $dateAdded): Carbon
+    {
+        [$periodStart] = $this->coveragePeriod($memberType, $dateAdded);
+
+        return $periodStart->copy()->addYear();
     }
 
     /**
@@ -195,7 +222,13 @@ class BenefitAccrualService
 
         [$from, $to] = $this->coveragePeriod($member->member_type, $referenceDate);
 
-        $ghpAmount = $this->resolveGhpAmount($member);
+        // Evaluated as of the cycle's own END, not $referenceDate —
+        // dependent eligibility (see resolveDependentEligibilityDate()) is
+        // an all-or-nothing-per-cycle rule, so the "required for this
+        // whole cycle" figure should reflect whatever will be true for the
+        // ENTIRE cycle, not just whatever happens to be true on the day
+        // someone is looking at this page.
+        $ghpAmount = $this->resolveGhpAmount($member, $to);
 
         // Clamped to the CURRENT cycle's own start — without this, a
         // member's second/third/... cycle would keep counting months all
@@ -236,9 +269,14 @@ class BenefitAccrualService
 
         [$from, $to] = $this->coveragePeriod($member->member_type, $asOf);
 
-        $ghpAmount = $this->resolveGhpAmount($member);
+        $ghpAmount = $this->resolveGhpAmount($member, $asOf);
 
+        // Excludes voided periods deliberately — a voided row was a
+        // mistake correction, not a real historical fund state, so it
+        // shouldn't feed the 10% carry-forward calculation (see
+        // BenefitPeriod::void() / BenefitPeriodController::void()).
         $priorPeriod = $member->benefitPeriods()
+            ->where('is_voided', false)
             ->whereDate('to_date', $from->copy()->subDay())
             ->first();
 
@@ -324,9 +362,22 @@ class BenefitAccrualService
                 // comparisons elsewhere (see countAccruedMonths()). Passing
                 // that raw value here made updateOrCreate()'s lookup compare
                 // '...23:59:59' against MySQL's midnight-padded DATE value,
-                // never match, then hit the unique constraint on insert.
+                // never match, then hit the (now-removed) unique constraint
+                // on insert.
                 'from_date' => $result['from']->toDateString(),
                 'to_date' => $result['to']->toDateString(),
+                // Only ever matches/updates the ACTIVE row for this cycle,
+                // never a voided one — a voided period (see
+                // BenefitPeriod::void()) must stay untouched history, not
+                // get silently resurrected with fresh numbers whenever this
+                // runs (e.g. from ReimbursementController::refreshCurrentPeriod()
+                // after an unrelated reimbursement change). When no active
+                // row exists for this cycle — whether none was ever
+                // generated, or the previous one was just voided — this
+                // creates a brand-new active row, which is exactly what
+                // "Generate this year's benefit period" becoming available
+                // again after a void is supposed to produce.
+                'is_voided' => false,
             ],
             [
                 'ghp_amount' => $result['ghp_amount'],

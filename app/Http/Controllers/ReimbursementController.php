@@ -200,7 +200,13 @@ class ReimbursementController extends Controller
     {
         [$from, $to] = $accrualService->coveragePeriod($member->member_type, $reimbursement->or_date);
 
+        // Excludes voided periods (see BenefitPeriod::void()) so a
+        // reimbursement never links to a mistakenly-generated period that
+        // was since corrected — if that cycle's period was voided and not
+        // yet regenerated, the reimbursement is simply left unlinked, same
+        // as any cycle with no benefit period row at all.
         $period = $member->benefitPeriods()
+            ->where('is_voided', false)
             ->whereDate('from_date', $from->toDateString())
             ->whereDate('to_date', $to->toDateString())
             ->first();
