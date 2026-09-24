@@ -231,178 +231,27 @@
             <div class="empty-state"><p>No benefit period history.</p></div>
         @else
             <p class="hint" style="margin-top: -8px; margin-bottom: 10px;">Click a period to view its reimbursement records.</p>
-
-            <div style="display: flex; gap: 10px; margin-bottom: 10px;">
-                <input type="text" id="benefitPeriodSearch" placeholder="Search benefit period..." oninput="filterBenefitPeriods()" style="flex: 1;">
-                <select id="benefitPeriodStatusFilter" onchange="filterBenefitPeriods()" style="width: 160px;">
-                    <option value="all">All</option>
-                    <option value="ongoing">Ongoing</option>
-                    <option value="voided">Voided</option>
-                </select>
-            </div>
-
-            <table id="benefitPeriodsTable">
+            <table>
                 <thead>
-                    <tr>
-                        <th>Period</th><th>Status</th><th class="num">GHP amount</th><th class="num">Used</th><th class="num">Available</th><th>Created</th>
-                        @if (auth()->user()->isAdmin())
-                            <th></th>
-                        @endif
-                    </tr>
+                    <tr><th>Period</th><th class="num">GHP amount</th><th class="num">Used</th><th class="num">Available</th></tr>
                 </thead>
                 <tbody>
                     @foreach ($member->benefitPeriods as $period)
-                        <tr data-status="{{ $period->is_voided ? 'voided' : 'ongoing' }}"
-                            data-search="{{ strtolower($period->from_date->format('F Y').' '.$period->to_date->format('F Y').' '.$period->from_date->format('Y').' '.$period->to_date->format('Y')) }}">
+                        <tr>
                             <td>
                                 <a href="{{ route('members.benefit-periods.reimbursements', ['member' => $member, 'benefitPeriod' => $period]) }}">
                                     {{ $period->from_date->format('M Y') }} &ndash; {{ $period->to_date->format('M Y') }}
                                 </a>
                             </td>
-                            <td>
-                                <span class="badge {{ $period->is_voided ? 'badge-warn' : 'badge-ok' }}">
-                                    {{ $period->is_voided ? 'Voided' : 'Ongoing' }}
-                                </span>
-                            </td>
                             <td class="num amount">&#8369;{{ number_format($period->ghp_amount, 2) }}</td>
                             <td class="num amount">&#8369;{{ number_format($period->ghp_used, 2) }}</td>
                             <td class="num amount">&#8369;{{ number_format($period->ghp_available, 2) }}</td>
-                            <td>{{ $period->created_at->format('M d, Y') }}</td>
-                            @if (auth()->user()->isAdmin())
-                                <td style="white-space: nowrap;">
-                                    @if ($period->is_voided)
-                                        <button type="button" class="btn btn-ghost" style="padding: 4px 10px; font-size: 12px; color: var(--danger);"
-                                            onclick="openDeleteBenefitPeriod({{ $period->id }}, {{ json_encode($period->from_date->format('M Y').' – '.$period->to_date->format('M Y')) }})">
-                                            Delete
-                                        </button>
-                                    @else
-                                        <button type="button" class="btn btn-ghost" style="padding: 4px 10px; font-size: 12px; color: var(--danger);"
-                                            onclick="openVoidBenefitPeriod({{ $period->id }}, {{ json_encode($period->from_date->format('M Y').' – '.$period->to_date->format('M Y')) }})">
-                                            Void
-                                        </button>
-                                    @endif
-                                </td>
-                            @endif
                         </tr>
                     @endforeach
                 </tbody>
             </table>
-            <div id="benefitPeriodsEmptyFilter" class="empty-state" style="display: none;"><p>No Benefit Period records found.</p></div>
-
-            <script>
-                function filterBenefitPeriods() {
-                    const search = (document.getElementById('benefitPeriodSearch').value || '').toLowerCase().trim();
-                    const status = document.getElementById('benefitPeriodStatusFilter').value;
-                    const rows = document.querySelectorAll('#benefitPeriodsTable tbody tr');
-                    let visibleCount = 0;
-
-                    rows.forEach(function (row) {
-                        const matchesSearch = search === '' || row.dataset.search.includes(search);
-                        const matchesStatus = status === 'all' || row.dataset.status === status;
-                        const visible = matchesSearch && matchesStatus;
-                        row.style.display = visible ? '' : 'none';
-                        if (visible) {
-                            visibleCount++;
-                        }
-                    });
-
-                    const emptyMessage = document.getElementById('benefitPeriodsEmptyFilter');
-                    const table = document.getElementById('benefitPeriodsTable');
-                    if (emptyMessage && table) {
-                        emptyMessage.style.display = visibleCount === 0 ? '' : 'none';
-                        table.style.display = visibleCount === 0 ? 'none' : '';
-                    }
-                }
-            </script>
         @endif
     </div>
-
-    {{-- Void / Delete Benefit Period modals --}}
-    @if (auth()->user()->isAdmin() && $member->benefitPeriods->isNotEmpty())
-        @php
-            $hasVoidBenefitPeriodErrors = $errors->any() && $errors->has('void_reason');
-        @endphp
-
-        <dialog id="voidBenefitPeriodModal" class="modal">
-            <form method="POST" id="voidBenefitPeriodForm">
-                @csrf
-
-                <div class="modal-head">
-                    <h2>Void Benefit Period?</h2>
-                    <button type="button" class="modal-close" onclick="voidBenefitPeriodModal.close()" aria-label="Close">&times;</button>
-                </div>
-
-                <div class="modal-body">
-                    @if ($hasVoidBenefitPeriodErrors)
-                        <div class="field">
-                            <p class="error" style="font-weight: 600;">Please fix the following:</p>
-                            <ul style="margin: 4px 0 0; padding-left: 18px; color: var(--danger); font-size: 13px;">
-                                @foreach ($errors->all() as $error)
-                                    <li>{{ $error }}</li>
-                                @endforeach
-                            </ul>
-                        </div>
-                    @endif
-
-                    <p style="margin-bottom: 12px;">Are you sure you want to void <strong id="voidBenefitPeriodLabel"></strong>?</p>
-                    <p class="hint" style="margin-bottom: 14px;">This removes it from the ongoing Benefit Period History and allows the current GHP cycle to be generated again. The record stays on file for history.</p>
-
-                    <div class="field" style="margin-bottom: 0;">
-                        <label for="void_benefit_period_reason">Reason for voiding</label>
-                        <textarea id="void_benefit_period_reason" name="void_reason" rows="3" required>{{ old('void_reason') }}</textarea>
-                    </div>
-                </div>
-
-                <div class="modal-foot">
-                    <button type="button" class="btn btn-ghost" onclick="voidBenefitPeriodModal.close()">Cancel</button>
-                    <button type="submit" class="btn btn-primary" style="background: var(--danger);">Confirm Void</button>
-                </div>
-            </form>
-        </dialog>
-
-        <dialog id="deleteBenefitPeriodModal" class="modal">
-            <form method="POST" id="deleteBenefitPeriodForm">
-                @csrf
-                @method('DELETE')
-
-                <div class="modal-head">
-                    <h2>Delete Voided Benefit Period?</h2>
-                    <button type="button" class="modal-close" onclick="deleteBenefitPeriodModal.close()" aria-label="Close">&times;</button>
-                </div>
-
-                <div class="modal-body">
-                    <p style="margin-bottom: 12px;">Are you sure you want to permanently delete <strong id="deleteBenefitPeriodLabel"></strong>?</p>
-                    <p class="hint" style="margin: 0;">This action cannot be undone.</p>
-                </div>
-
-                <div class="modal-foot">
-                    <button type="button" class="btn btn-ghost" onclick="deleteBenefitPeriodModal.close()">Cancel</button>
-                    <button type="submit" class="btn btn-primary" style="background: var(--danger);">Delete Permanently</button>
-                </div>
-            </form>
-        </dialog>
-
-        <script>
-            const benefitPeriodUrlBase = '{{ url('members/'.$member->id.'/benefit-periods') }}';
-
-            function openVoidBenefitPeriod(id, label) {
-                document.getElementById('voidBenefitPeriodLabel').textContent = label;
-                document.getElementById('voidBenefitPeriodForm').action = benefitPeriodUrlBase + '/' + id + '/void';
-                document.getElementById('void_benefit_period_reason').value = '';
-                voidBenefitPeriodModal.showModal();
-            }
-
-            function openDeleteBenefitPeriod(id, label) {
-                document.getElementById('deleteBenefitPeriodLabel').textContent = label;
-                document.getElementById('deleteBenefitPeriodForm').action = benefitPeriodUrlBase + '/' + id;
-                deleteBenefitPeriodModal.showModal();
-            }
-
-            @if ($hasVoidBenefitPeriodErrors)
-                voidBenefitPeriodModal.showModal();
-            @endif
-        </script>
-    @endif
 
     <div class="card">
         <div class="card-head">

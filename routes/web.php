@@ -64,12 +64,6 @@ Route::middleware(['auth', 'active'])->group(function () {
         Route::post('/members/{member}/reimbursements/{reimbursement}/void', [ReimbursementController::class, 'void'])->name('members.reimbursements.void');
         Route::post('/members/{member}/reimbursements/{reimbursement}/unvoid', [ReimbursementController::class, 'unvoid'])->name('members.reimbursements.unvoid');
 
-        // Benefit Period Year History: Void (correct a mistakenly generated
-        // period, allowing that cycle to be generated again) and Delete
-        // (permanent, voided periods only) — see BenefitPeriodController.
-        Route::post('/members/{member}/benefit-periods/{benefitPeriod}/void', [BenefitPeriodController::class, 'void'])->name('members.benefit-periods.void');
-        Route::delete('/members/{member}/benefit-periods/{benefitPeriod}', [BenefitPeriodController::class, 'destroy'])->name('members.benefit-periods.destroy');
-
         Route::post('/members/{member}/dependents', [DependentController::class, 'store'])->name('members.dependents.store');
         Route::put('/members/{member}/dependents/{dependent}', [DependentController::class, 'update'])->name('members.dependents.update');
         Route::delete('/members/{member}/dependents/{dependent}', [DependentController::class, 'destroy'])->name('members.dependents.destroy');

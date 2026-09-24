@@ -5,7 +5,7 @@ Use this as a quick reference before starting new work — check "Not Implemente
 before assuming something doesn't exist, and check "Known Issues" before
 re-diagnosing a problem that's already been flagged.
 
-**Last updated:** 2026-09-24
+**Last updated:** 2026-09-24 (Void/Delete/Search/Filter reverted — see §2.11)
 
 ---
 
@@ -92,15 +92,28 @@ for Excel export — is no longer needed; that feature was built and then remove
 - **Tests:** `BenefitAccrualServiceTest.php`
 - **Not yet run** — fixed from reading the service and test code directly; run `php artisan test` to confirm.
 
-### 2.11 Benefit Period Year History — Void + Delete + search/filter
-- Added a **Void** action for an active/ongoing Benefit Period (member page → "Benefit periods" card): marks it `is_voided` instead of deleting it, so it stays on file for history/audit but no longer counts as "already generated" for that cycle — **"Generate this year's benefit period" becomes available again immediately**, and generating creates a brand-new active row alongside the voided one (never two active rows for the same cycle).
-- Added a **Delete** action, but **only for already-voided** periods — enforced server-side (`BenefitPeriodController::destroy()`, `422` if the target isn't voided), not just by hiding the button. Safe to hard-delete: `reimbursements.benefit_period_id` is `nullOnDelete()`, and `benefit_ledger` has no FK to `benefit_periods` at all — no reimbursement, deduction, or member record is ever touched.
-- Added a **search box + Status filter** (All / Ongoing / Voided) above the table. Implemented client-side (JS filtering of the already-loaded rows) rather than a server round-trip — this table is small (one row per member per cycle), and the destructive-action rules that actually matter (only-voided-can-be-deleted, no-duplicate-active) are enforced server-side regardless of the filter UI.
-- **Files:** migration `2026_09_24_100000_add_void_fields_to_benefit_periods_table.php` (adds `is_voided`/`voided_at`/`voided_reason`/`voided_by`; **drops** the old `unique(member_id, from_date, to_date)` constraint — see below), `BenefitPeriod.php` (`void()`, `scopeOngoing`/`scopeVoided`, `voidedBy()`), `VoidBenefitPeriodRequest.php`, `BenefitPeriodController::void()`/`destroy()`, two new routes (`members.benefit-periods.void`/`.destroy`), `members/show.blade.php` (Status + Action + Created columns, search/filter bar, Void/Delete confirmation modals).
-- **Why the unique constraint had to go:** it assumed exactly one row could ever exist per member+cycle, which Void deliberately breaks (a voided row and a later regenerated active row now legitimately share the same `from_date`/`to_date`). "Only one ACTIVE row per member+cycle" is enforced at the application layer instead, inside the same locked transaction `generateBenefitPeriod()` already used before this change — same pattern as `ReimbursementController::assertWithinBalance()`.
-- **Follow-on fixes required by the same change** (so voiding actually works end-to-end, not just the button): `BenefitAccrualService::accrue()`'s `updateOrCreate()` match now also requires `is_voided = false`, so it can never silently "resurrect" a voided row with fresh numbers — it creates a new active row instead, whenever one doesn't already exist (first-time generation and post-void regeneration are now the same code path). `calculate()`'s prior-period lookup (10% carry-forward) and `ReimbursementController::linkToBenefitPeriod()`'s period match both now also exclude voided rows, for the same reason. `MemberController::show()`'s `$currentBenefitPeriod`/`$currentCyclePeriod` both now skip voided rows too, so the Benefit balance card and the reimbursement modal's "Available GHP amount" never show a voided period's stale figures.
-- **Tests:** `BenefitPeriodManagementTest.php` — void (admin-only, requires a reason, can't double-void, 404 for another member's period), the full void-then-regenerate workflow (voided row + new active row both present, only one active), the member page's current-period display skipping a voided one, delete (voided-only, 422 on an active one, admin-only, 404 for another member's period, doesn't cascade-delete a linked reimbursement).
-- **Not yet run** — written from reading the controllers/models/service directly; run `php artisan migrate` (new migration) then `php artisan test --filter=BenefitPeriodManagementTest` to confirm. The `ReimbursementManagementTest`/`AmountAdjustmentManagementTest` suites are also worth re-running since `BenefitAccrualService::calculate()`/`accrue()` changed.
+### 2.11 Benefit Period Year History — Void + Delete + search/filter (ADDED, THEN REVERTED)
+- **REVERTED 2026-09-24, per explicit client request.** This whole feature — Void action, Delete action, search box, Status filter — was built (as described below), then taken back out the same day. The Benefit Period system is back to a strict **one-generation-per-GHP-cycle** rule: once a cycle's period is generated, there is no void, no delete, no regenerate, no manual reset. It becomes generatable again only when the next Apr–Mar (or Jun–May, Agents) cycle actually starts. See §2.13 below for exactly what the revert touched and why. The description that follows is kept for history/context only — none of it reflects the current system.
+- ~~Added a **Void** action for an active/ongoing Benefit Period (member page → "Benefit periods" card): marks it `is_voided` instead of deleting it, so it stays on file for history/audit but no longer counts as "already generated" for that cycle — "Generate this year's benefit period" becomes available again immediately, and generating creates a brand-new active row alongside the voided one (never two active rows for the same cycle).~~
+- ~~Added a **Delete** action, but only for already-voided periods — enforced server-side (`BenefitPeriodController::destroy()`, `422` if the target isn't voided), not just by hiding the button. Safe to hard-delete: `reimbursements.benefit_period_id` is `nullOnDelete()`, and `benefit_ledger` has no FK to `benefit_periods` at all — no reimbursement, deduction, or member record is ever touched.~~
+- ~~Added a **search box + Status filter** (All / Ongoing / Voided) above the table, implemented client-side.~~
+- ~~**Files (now reverted):** migration `2026_09_24_100000_add_void_fields_to_benefit_periods_table.php`, `BenefitPeriod.php` (`void()`, `scopeOngoing`/`scopeVoided`, `voidedBy()`), `VoidBenefitPeriodRequest.php`, `BenefitPeriodController::void()`/`destroy()`, two routes (`members.benefit-periods.void`/`.destroy`), `members/show.blade.php` (Status + Action + Created columns, search/filter bar, Void/Delete confirmation modals).~~
+
+### 2.13 Revert of §2.11 — back to strict one-generation-per-cycle
+- Removed everything §2.11 added: the Void button, Delete button, search box, and Status filter are gone from the "Benefit periods" card on the member page, which is back to its original plain table (Period / GHP amount / Used / Available, no Action column, no admin-only gating on it — that gating never existed there before §2.11 either).
+- `BenefitPeriodController::void()`/`destroy()` removed entirely. `VoidBenefitPeriodRequest.php` and `tests/Feature/BenefitPeriodManagementTest.php` moved to `_removed-by-claude/` (can't truly delete files from here — see that folder's existing note). The two routes (`members.benefit-periods.void`/`.destroy`) removed from `routes/web.php`.
+- `BenefitPeriod.php`: `void()`, `scopeOngoing()`/`scopeVoided()`, `voidedBy()`, and the `is_voided`/`voided_at`/`voided_reason`/`voided_by` fillable/casts/activity-log entries all removed — back to exactly its pre-§2.11 shape.
+- `BenefitAccrualService::accrue()`'s `updateOrCreate()` match and `calculate()`'s prior-period (carry-forward) lookup both had their `is_voided = false` filters removed. `ReimbursementController::linkToBenefitPeriod()`'s period match had the same filter removed. `MemberController::show()`'s `$currentBenefitPeriod`/`$currentCyclePeriod` and `generateBenefitPeriod()`'s "already exists" check all had their `is_voided` filters removed — every one of these is back to exactly what it was before §2.11, since the column they were filtering on no longer exists.
+- **Database — handled carefully, per "preserve existing data":** the original §2.11 migration's first run had already failed partway through in this environment (MySQL error 1553 dropping the old unique index) — and since MySQL's `ALTER TABLE` statements auto-commit individually rather than as one transaction, the column/FK additions that ran *before* that failure may already be sitting in the live database even though the migration itself was never recorded as completed. To handle that safely regardless of which partial state the DB is actually in:
+  1. Rewrote `2026_09_24_100000_add_void_fields_to_benefit_periods_table.php` (same file, same timestamp — it was never recorded as having run) to be fully idempotent: every column/index add or drop now checks first via `Schema::hasColumn()`/`Schema::getIndexes()`, so it safely finishes to a known state (void columns present, old unique dropped) whether it previously ran fully, partially, or not at all.
+  2. Added a new migration, `2026_09_24_200000_revert_void_fields_from_benefit_periods_table.php`, that undoes it: restores the `unique(member_id, from_date, to_date)` constraint (this IS the strict one-per-cycle rule at the DB level — no void, delete, or regenerate can ever get around it once it's back), then drops `is_voided`/`voided_at`/`voided_reason`/`voided_by` and their supporting index/FK. Also idempotent throughout, and index-ordering-safe (adds the unique back before dropping the plain index that was standing in as the FK's backing index — the same MySQL 1553 issue in reverse).
+  3. **Duplicate handling:** if any member was actually voided-then-regenerated while this feature was live, they'd now have two rows sharing the same `member_id`/`from_date`/`to_date` — which would make restoring the unique constraint fail. The revert migration only removes a voided row when a confirmed ACTIVE sibling exists for the exact same member+cycle (a genuinely superseded, abandoned row); a voided row with no active sibling is left completely untouched and simply becomes an ordinary row once `is_voided` is dropped — correctly blocking that cycle from regeneration under the new strict rule, same as if Void had never existed. Any other ambiguous case (e.g. two rows both still voided) is deliberately left alone rather than guessed at, so the unique-constraint step fails loudly with a clear DB error instead of silently discarding data.
+- **Not yet run** — written from reading the current controllers/models/service/migrations directly. Run, in order:
+  ```
+  php artisan migrate
+  php artisan test
+  ```
+  Both migrations above will run in the same `migrate` call (in filename order, `...100000` then `...200000`) if neither has run yet. If `...100000` already succeeded on its own in this environment before this revert, only `...200000` will apply. Watch specifically for a unique-constraint error from `...200000` — if that happens, it means the ambiguous-duplicate case above was hit and needs a manual look at the flagged `member_id`/`from_date`/`to_date` group before the migration can complete. Also worth re-running `ReimbursementManagementTest`/`AmountAdjustmentManagementTest`, since `BenefitAccrualService` changed again.
 
 ### 2.12 Dependent eligibility now waits for the next benefit period
 - **Business rule changed (intentional):** adding a dependent no longer raises the member's GHP amount immediately. Previously, `DependentController::store()` recalculated `members.ghp_amount` the instant a dependent was saved, based only on the age/relation rule (`Dependent::is_eligible`) — no awareness of *when* it was added. Now a dependent added during an ongoing benefit period is recorded and shown right away, but only starts counting toward the higher (₱4,200) rate once the *next* coverage cycle begins.
@@ -177,13 +190,19 @@ resources/views/
 
 database/migrations/  (profile_photo_path, users.is_active, users.user_code,
                         members.email, departments.division_id,
-                        benefit_periods void fields + dropped unique constraint)
+                        benefit_periods void fields ADDED then REVERTED —
+                        see task.md §2.11/§2.13; net effect is a no-op
+                        schema-wise, original unique constraint restored)
 
 tests/Feature/
   ProfileTest.php, MemberSearchTest.php, UserManagementTest.php,
   MemberManagementTest.php, DepartmentManagementTest.php,
   ReimbursementManagementTest.php, AmountAdjustmentManagementTest.php,
-  DataQualityReportTest.php, BenefitPeriodManagementTest.php
+  DataQualityReportTest.php
 
-_removed-by-claude/   (orphaned export controller + PDF view — safe to delete)
+_removed-by-claude/   (orphaned export controller + PDF view, plus
+                        VoidBenefitPeriodRequest.php and
+                        BenefitPeriodManagementTest.php from the reverted
+                        §2.11 Void/Delete feature — safe to delete this
+                        whole folder)
 ```

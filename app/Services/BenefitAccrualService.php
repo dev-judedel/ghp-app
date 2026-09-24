@@ -271,12 +271,7 @@ class BenefitAccrualService
 
         $ghpAmount = $this->resolveGhpAmount($member, $asOf);
 
-        // Excludes voided periods deliberately — a voided row was a
-        // mistake correction, not a real historical fund state, so it
-        // shouldn't feed the 10% carry-forward calculation (see
-        // BenefitPeriod::void() / BenefitPeriodController::void()).
         $priorPeriod = $member->benefitPeriods()
-            ->where('is_voided', false)
             ->whereDate('to_date', $from->copy()->subDay())
             ->first();
 
@@ -362,22 +357,9 @@ class BenefitAccrualService
                 // comparisons elsewhere (see countAccruedMonths()). Passing
                 // that raw value here made updateOrCreate()'s lookup compare
                 // '...23:59:59' against MySQL's midnight-padded DATE value,
-                // never match, then hit the (now-removed) unique constraint
-                // on insert.
+                // never match, then hit the unique constraint on insert.
                 'from_date' => $result['from']->toDateString(),
                 'to_date' => $result['to']->toDateString(),
-                // Only ever matches/updates the ACTIVE row for this cycle,
-                // never a voided one — a voided period (see
-                // BenefitPeriod::void()) must stay untouched history, not
-                // get silently resurrected with fresh numbers whenever this
-                // runs (e.g. from ReimbursementController::refreshCurrentPeriod()
-                // after an unrelated reimbursement change). When no active
-                // row exists for this cycle — whether none was ever
-                // generated, or the previous one was just voided — this
-                // creates a brand-new active row, which is exactly what
-                // "Generate this year's benefit period" becoming available
-                // again after a void is supposed to produce.
-                'is_voided' => false,
             ],
             [
                 'ghp_amount' => $result['ghp_amount'],
