@@ -256,33 +256,6 @@ class BenefitAccrualService
     }
 
     /**
-     * Sums accrual across the whole elapsed span using a single flat rate:
-     * whatever resolveGhpAmount() returns as of $asOf (i.e. TODAY's rate),
-     * multiplied by every month counted by countAccruedMonths(). This is
-     * the project's original/previous accrual calculation, restored
-     * 2026-09-24 per explicit request (see task.md §2.17) after a brief
-     * period (§2.16) where it had been changed to a month-by-month
-     * historical-rate calculation.
-     *
-     * Deliberate, known consequence of the flat-rate approach: the moment
-     * a dependent becomes GHP-eligible (normal next-cycle rollover, or an
-     * admin's Immediate Eligibility grant), every already-elapsed month in
-     * the CURRENT coverage period is recalculated at the new rate too —
-     * e.g. 3 months already accrued at ₱300/mo (₱900) become ₱1,050
-     * (3 × ₱350) the instant eligibility changes, with nothing new having
-     * actually been earned for that already-elapsed time. This is
-     * intentional under the restored calculation, not a defect — do not
-     * "fix" it again without an explicit request to do so.
-     */
-    private function accruedAmount(Member $member, CarbonInterface $accrualStart, CarbonInterface $periodEnd, CarbonInterface $asOf): float
-    {
-        $monthsAccrued = $this->countAccruedMonths($accrualStart, $periodEnd, $asOf);
-        $ghpAmount = $this->resolveGhpAmount($member, $asOf);
-
-        return round(($ghpAmount / 12) * $monthsAccrued, 2);
-    }
-
-    /**
      * Full calculation for a member's coverage period, WITHOUT persisting.
      * Useful for validation/comparison against historical data.
      *
@@ -308,11 +281,8 @@ class BenefitAccrualService
         $accrualStart = $dedStart->greaterThan($from) ? $dedStart : $from;
 
         $monthsAccrued = $this->countAccruedMonths($accrualStart, $to, $asOf);
-
-        // Restored 2026-09-24 (task.md §2.17): flat rate × elapsed months,
-        // same as accruedAmount() above — kept as two calls rather than
-        // inlined so $monthsAccrued below still matches what's returned.
-        $accrued = $this->accruedAmount($member, $accrualStart, $to, $asOf);
+        $monthlyRate = $ghpAmount / 12;
+        $accrued = round($monthlyRate * $monthsAccrued, 2);
 
         $used = (float) $member->reimbursements()
             ->notVoided()
