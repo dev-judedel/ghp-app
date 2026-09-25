@@ -114,7 +114,18 @@
                 </div>
                 <div class="ledger-row">
                     <span class="label">GHP amount</span>
-                    <span class="amount ledger">&#8369;{{ number_format($currentBenefitPeriod->ghp_amount, 2) }}</span>
+                    {{-- When a period already exists for THIS cycle, show the live
+                         required rate (always current — reflects a dependent that
+                         just became eligible, normally or via Immediate Eligibility)
+                         instead of the persisted snapshot, which is deliberately NOT
+                         refreshed just because a dependent changed (see
+                         DependentEligibilityService::syncGhpAmount()). Used/Available
+                         below are untouched — they still come from the persisted
+                         period, exactly as generated/refreshed. When no period exists
+                         yet for this cycle, $currentBenefitPeriod is really last
+                         cycle's row, so this keeps showing ITS own amount rather than
+                         mixing this cycle's live rate with last cycle's balance. --}}
+                    <span class="amount ledger">&#8369;{{ number_format(($currentCyclePeriod && $requiredGhp) ? $requiredGhp['ghp_amount'] : $currentBenefitPeriod->ghp_amount, 2) }}</span>
                 </div>
                 <div class="ledger-row">
                     <span class="label">Used</span>
@@ -335,23 +346,23 @@
                 </div>
             </div>
             <div class="scroll-panel" tabindex="0" role="region" aria-label="Amount adjustment history (scrollable)">
-            <table>
-                <thead>
-                    <tr><th>Date</th><th class="num">Old amount</th><th class="num">New amount</th><th>Reason</th><th>Reference</th><th>Recorded by</th></tr>
-                </thead>
-                <tbody>
-                    @foreach ($member->amountAdjustments as $adjustment)
-                        <tr>
-                            <td>{{ optional($adjustment->requested_at)->format('M d, Y') ?? '—' }}</td>
-                            <td class="num amount">&#8369;{{ number_format($adjustment->old_amount, 2) }}</td>
-                            <td class="num amount">&#8369;{{ number_format($adjustment->new_amount, 2) }}</td>
-                            <td>{{ $adjustment->reason }}</td>
-                            <td>{{ $adjustment->request_reference ?? '—' }}</td>
-                            <td>{{ $adjustment->recorded_by ?? '—' }}</td>
-                        </tr>
-                    @endforeach
-                </tbody>
-            </table>
+                <table>
+                    <thead>
+                        <tr><th>Date</th><th class="num">Old amount</th><th class="num">New amount</th><th>Reason</th><th>Reference</th><th>Recorded by</th></tr>
+                    </thead>
+                    <tbody>
+                        @foreach ($member->amountAdjustments as $adjustment)
+                            <tr>
+                                <td>{{ optional($adjustment->requested_at)->format('M d, Y') ?? '—' }}</td>
+                                <td class="num amount">&#8369;{{ number_format($adjustment->old_amount, 2) }}</td>
+                                <td class="num amount">&#8369;{{ number_format($adjustment->new_amount, 2) }}</td>
+                                <td>{{ $adjustment->reason }}</td>
+                                <td>{{ $adjustment->request_reference ?? '—' }}</td>
+                                <td>{{ $adjustment->recorded_by ?? '—' }}</td>
+                            </tr>
+                        @endforeach
+                    </tbody>
+                </table>
             </div>
         </div>
     @endif
@@ -365,37 +376,37 @@
                 </div>
             </div>
             <div class="scroll-panel scroll-panel-tall" tabindex="0" role="region" aria-label="Recent activity (scrollable)">
-            <table>
-                <thead>
-                    <tr><th style="width: 150px;">When</th><th style="width: 130px;">By</th><th>What changed</th></tr>
-                </thead>
-                <tbody>
-                    @foreach ($activityFeed as $activity)
-                        <tr>
-                            <td>{{ $activity->created_at->format('M d, Y g:i A') }}</td>
-                            <td>{{ $activity->causer->name ?? 'System' }}</td>
-                            <td>
-                                <div>{{ $activity->description }}</div>
-                                @if ($activity->properties->has('attributes'))
-                                    <ul style="margin: 4px 0 0; padding-left: 16px; font-size: 12px; color: var(--ink-muted);">
-                                        @foreach ($activity->properties->get('attributes') as $field => $newValue)
-                                            @php $oldValue = $activity->properties->get('old')[$field] ?? null; @endphp
-                                            <li>
-                                                <strong>{{ $field }}</strong>:
-                                                @if ($activity->properties->has('old'))
-                                                    {{ $oldValue ?? '—' }} &rarr; {{ $newValue ?? '—' }}
-                                                @else
-                                                    {{ $newValue ?? '—' }}
-                                                @endif
-                                            </li>
-                                        @endforeach
-                                    </ul>
-                                @endif
-                            </td>
-                        </tr>
-                    @endforeach
-                </tbody>
-            </table>
+                <table>
+                    <thead>
+                        <tr><th style="width: 150px;">When</th><th style="width: 130px;">By</th><th>What changed</th></tr>
+                    </thead>
+                    <tbody>
+                        @foreach ($activityFeed as $activity)
+                            <tr>
+                                <td>{{ $activity->created_at->format('M d, Y g:i A') }}</td>
+                                <td>{{ $activity->causer->name ?? 'System' }}</td>
+                                <td>
+                                    <div>{{ $activity->description }}</div>
+                                    @if ($activity->properties->has('attributes'))
+                                        <ul style="margin: 4px 0 0; padding-left: 16px; font-size: 12px; color: var(--ink-muted);">
+                                            @foreach ($activity->properties->get('attributes') as $field => $newValue)
+                                                @php $oldValue = $activity->properties->get('old')[$field] ?? null; @endphp
+                                                <li>
+                                                    <strong>{{ $field }}</strong>:
+                                                    @if ($activity->properties->has('old'))
+                                                        {{ $oldValue ?? '—' }} &rarr; {{ $newValue ?? '—' }}
+                                                    @else
+                                                        {{ $newValue ?? '—' }}
+                                                    @endif
+                                                </li>
+                                            @endforeach
+                                        </ul>
+                                    @endif
+                                </td>
+                            </tr>
+                        @endforeach
+                    </tbody>
+                </table>
             </div>
         </div>
     @endif

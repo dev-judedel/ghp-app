@@ -1,11 +1,13 @@
 # Project Progress & Task Tracking
 
 **Project:** GHP — Group Health Plan Management System (`ghp-app`)
-**Document version:** 1.0
-**Last updated:** 2026-09-24
+**Document version:** 1.1
+**Last updated:** 2026-09-24 (synced through task.md §2.20)
 **Primary sources:** `task.md`, `profile_features.md`, actual source code (controllers, models, migrations, requests, services), and the `tests/` directory.
 
-> **Status-verification note:** Per `task.md`, several of the most recent changes (§2.8–§2.13 below) are explicitly marked **"Not yet run"** by the developer who made them — meaning the migrations/tests were written from direct code inspection but have **not been confirmed to execute successfully** in this environment. This document treats those items as ⚠️ **Needs Review**, not ✅ Completed, until `php artisan migrate` and `php artisan test` have actually been run and confirmed passing.
+> Kept in sync with `task.md` on every project change, per standing instruction (see `task.md`'s header note) — not a point-in-time snapshot.
+
+> **Status-verification note:** Per `task.md`, several of the most recent changes (§2.8–§2.17 below) are explicitly marked **"Not yet run"** by the developer who made them — meaning the migrations/tests were written from direct code inspection but have **not been confirmed to execute successfully** in this environment. This document treats those items as ⚠️ **Needs Review**, not ✅ Completed, until `php artisan migrate` and `php artisan test` have actually been run and confirmed passing. §2.18/§2.19/§2.20 are exceptions — verification-only passes that added regression tests but changed no application code, so there's nothing new there that changes this caveat.
 
 ---
 
@@ -13,9 +15,9 @@
 
 GHP is a substantially complete, actively-developed Laravel 13 application administering a Group Health Plan benefit fund. Core functionality — member/dependent management, benefit accrual calculation, reimbursement filing with balance enforcement, user management, departments, reporting, and audit logging — is implemented and covered by feature/unit tests. Two significant pieces of scope were **explicitly built and then removed** at client request (Member export, and the Benefit Period Void/Delete/Search/Filter feature) — both are fully reverted in the active codebase; only orphaned files remain in `_removed-by-claude/` for reference.
 
-The most recent working session (2026-09-24) made a business-rule change to dependent eligibility timing, added test coverage for previously-undertested financial controllers, fixed several bugs (a `ViewNotFoundException` on the reimbursement PDF receipt, stale test assertions, a 405 error on member status toggling, a PostgreSQL-only `ilike` operator breaking search and `EXTRACT/::int` syntax breaking Reports), and then reverted the Void/Delete/Search/Filter feature per an explicit client decision — including a carefully idempotent migration pair to make sure that revert is safe regardless of which partial state the live database was left in.
+After the Void/Delete/Search/Filter revert, work continued on the Benefit Balance/Dependents area: **Immediate Eligibility** was added (an admin override that grants a still-pending dependent eligibility today instead of waiting for the next coverage cycle), a spouse-on-Married-edit flow was added to Edit Member, a broken "Generate this year's benefit period" button was fixed (a missing confirmation modal plus a controller that silently auto-generated periods as a side effect of unrelated actions), and the core Available-GHP accrual formula itself went through a **deliberate reversal**: it was changed to preserve each already-rendered month's historical rate (§2.16), then explicitly reverted the same day back to the original flat-rate formula — current tier × months rendered, recalculating already-rendered months retroactively — per direct client instruction (§2.17). §2.18 and §2.19 then independently verified, with new regression tests, that (a) the GHP tier is never multiplied by dependent count and (b) Available GHP does equal months-rendered × applicable-monthly-rate as currently required; both confirmed no further code changes were needed.
 
-**As of this update, the top priority before anything else is operational, not development work:** run `php artisan migrate` then `php artisan test` to confirm the pending migrations and the newly-written/updated tests actually pass in this environment, since several were written from code inspection alone and are flagged as unverified.
+**As of this update, the top priority before anything else is operational, not development work:** run `php artisan migrate` then `php artisan test` to confirm the pending migrations and the newly-written/updated tests actually pass in this environment, since several were written from code inspection alone and are flagged as unverified. This has been true since §2.8 and remains the single largest gap between "code written" and "confirmed working."
 
 ---
 
@@ -29,8 +31,11 @@ Features confirmed actually implemented and working based on the current code (n
 - ✅ Member Management: email field, auto/manual member code, individual + bulk Activate/Deactivate, required `apply_date`/`start_date`
 - ✅ Department Management (pre-existing, verified functional; free-text Division assignment)
 - ✅ Dependent management with mid-cycle eligibility gating (dependents added mid-cycle wait until the next coverage cycle to raise the GHP amount)
-- ✅ Benefit accrual engine (`BenefitAccrualService`) — coverage-year logic, 3,600/4,200 GHP amount rule, monthly proration, 10% unused carry-forward
-- ✅ Strict one-benefit-period-per-cycle enforcement (after the Void/Delete feature's full revert)
+- ✅ **Immediate Eligibility** admin override — bypasses the next-cycle wait for one dependent, admin-only, one-time, doesn't touch Coverage Year History or the Generate-button rule
+- ✅ Spouse-on-Married-edit — Edit Member reveals a Dependent Spouse section when civil status changes to Married, saved as an ordinary dependent in the same transaction
+- ✅ Benefit accrual engine (`BenefitAccrualService`) — coverage-year logic, 3,600/4,200 GHP amount rule (dependent count never multiplies the tier, verified §2.18), 10% unused carry-forward
+- ✅ **Available GHP = months rendered × applicable monthly rate** (flat-rate, current-tier formula) — the instant a dependent becomes GHP-eligible, already-rendered months in the current period recalculate at the new rate too; this is the confirmed, current, intentional behavior (task.md §2.17–§2.19) after a same-day formula reversal
+- ✅ Strict one-benefit-period-per-cycle enforcement (after the Void/Delete feature's full revert) — "Generate this year's benefit period" button fixed (§2.15: was unclickable due to a missing confirmation modal + a controller that silently auto-generated periods as a side effect)
 - ✅ Reimbursement filing/editing with balance-enforcement (cannot exceed available GHP), void/unvoid with reason
 - ✅ Coverage Year History → Reimbursement drill-down, with printable/downloadable PDF receipt (bug-fixed: missing Blade view)
 - ✅ Manual GHP amount adjustment / revert-to-automatic, with structured history
@@ -53,7 +58,8 @@ Per `task.md`, work is currently at a **stabilization / verification checkpoint*
 | Run `php artisan migrate` to apply the two most recent migrations (`2026_09_24_100000_...` idempotent rewrite, `2026_09_24_200000_...` revert, plus `2026_09_24_110000_...` dependent eligibility fields, and `2026_09_21_100000_...` benefit_period_id backfill if not already applied) | task.md §2.9, §2.12, §2.13 | ⏳ Pending — not confirmed run in this environment |
 | Run `php artisan test` to confirm all recently written/updated tests actually pass | task.md §2.8, §2.9, §2.10, §2.12, §2.13 | ⏳ Pending — not confirmed run in this environment |
 | Watch specifically for a unique-constraint error from the `..._200000_revert...` migration (would indicate an ambiguous voided-duplicate benefit-period row needing manual review) | task.md §2.13 | ⚠️ Needs Review if/when migration is run |
-| Re-run `ReimbursementManagementTest` / `AmountAdjustmentManagementTest` specifically, since `BenefitAccrualService` changed again after those tests were written | task.md §2.13 | ⏳ Pending |
+| Re-run `ReimbursementManagementTest` / `AmountAdjustmentManagementTest` specifically, since `BenefitAccrualService` changed again after those tests were written | task.md §2.13, §2.17 | ⏳ Pending |
+| Run `php artisan migrate` for the dependent eligibility fields + Immediate Eligibility migrations (`2026_09_24_110000_...`, `2026_09_24_120000_...`) and confirm `ImmediateEligibilityTest.php` / `GenerateBenefitPeriodButtonTest.php` pass | task.md §2.12, §2.14, §2.15 | ⏳ Pending |
 | Delete the `_removed-by-claude/` folder once its contents are confirmed no longer needed (orphaned export controller/view, reverted Void feature's request/test) | task.md §2.7, §2.13 | ⏳ Pending (manual cleanup decision, not automatic) |
 
 ---
@@ -183,7 +189,9 @@ These were written correctly per code review by the developer, but their actual 
 | `tests/Feature/MemberBenefitSetupTest.php` | Dependent-driven GHP amount recalculation, including new eligibility-timing behavior | ✅ Present, updated this session — ⚠️ **not yet run** (new cases) |
 | `tests/Feature/ReportExportTest.php` | Report PDF/CSV export | ✅ Present |
 | `tests/Feature/ExampleTest.php` | Laravel scaffold smoke test | ✅ Present, corrected this session |
-| `tests/Unit/BenefitAccrualServiceTest.php` | Core accrual math: coverage periods, proration, carry-forward, eligibility gating | ✅ Present, updated this session — ⚠️ **not yet run** (new/changed cases) |
+| `tests/Unit/BenefitAccrualServiceTest.php` | Core accrual math: coverage periods, proration, carry-forward, eligibility gating, the flat-rate Available GHP formula, dependent-count-never-multiplies regression coverage (§2.17–§2.19) | ✅ Present, updated this session — ⚠️ **not yet run** (new/changed cases) |
+| `tests/Feature/ImmediateEligibilityTest.php` | Immediate Eligibility: admin-only, one-time grant, age-rule rejection, Benefit Period left untouched | ✅ Present (§2.14) — ⚠️ **not yet run** |
+| `tests/Feature/GenerateBenefitPeriodButtonTest.php` | "Generate this year's benefit period" button fix (§2.15) | ✅ Present — ⚠️ **not yet run** |
 | `tests/Unit/ExampleTest.php` | Scaffold unit smoke test | ✅ Present |
 
 ### Confirmed gaps
@@ -204,11 +212,11 @@ Pay particular attention to `MemberBenefitSetupTest` and `BenefitAccrualServiceT
 
 | Document | Status |
 |---|---|
-| `task.md` | ✅ Actively maintained, detailed, last updated 2026-09-24 — treated as the primary source of truth for recent history in this Progress.md |
+| `task.md` | ✅ Actively maintained, detailed, last updated 2026-09-24 (§2.20) — treated as the primary source of truth for recent history in this Progress.md. Now carries a **standing rule**: every project change updates `task.md`, `BRD.md`, and `Progress.md` together, not `task.md` alone. |
 | `profile_features.md` | ✅ Complete standalone log for the Profile feature specifically; superseded/summarized (not replaced) by this Progress.md and BRD.md |
 | `README.md` | ⚠️ Generic Laravel framework boilerplate — contains no project-specific information about GHP |
-| `BRD.md` (this update) | ✅ Created/updated 2026-09-24, based on actual code + `task.md` |
-| `Progress.md` (this update) | ✅ Created/updated 2026-09-24, based on actual code + `task.md` |
+| `BRD.md` | ✅ v1.1, synced through `task.md` §2.20 — added FR-DEP-006/007 (Immediate Eligibility, spouse-on-Married), BR-020/BR-021 (flat-rate Available GHP formula, dependent count never multiplies) |
+| `Progress.md` (this document) | ✅ v1.1, synced through `task.md` §2.20 |
 | `.env.example` | ⚠️ Needs Review — missing documentation for `LEGACY_DB_*` variables actually required by the legacy import command |
 
 ---

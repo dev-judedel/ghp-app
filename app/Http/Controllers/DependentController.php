@@ -8,6 +8,7 @@ use App\Models\Member;
 use App\Services\BenefitAccrualService;
 use App\Services\DependentEligibilityService;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
 class DependentController extends Controller
@@ -28,11 +29,18 @@ class DependentController extends Controller
      */
     public function store(StoreDependentRequest $request, Member $member, BenefitAccrualService $accrualService, DependentEligibilityService $eligibility): RedirectResponse
     {
-        // Same behavior as before — creation just lives in the shared
-        // service now so the Edit Member spouse flow uses the identical rule.
-        $eligibility->addDependent($member, $request->validated());
+        // Wrapped together per the GHP Benefit Balance fix (spec §17):
+        // creating the dependent and re-syncing members.ghp_amount must
+        // succeed or fail as one unit, so a member is never left with a
+        // saved dependent but a stale ghp_amount if the second write were
+        // ever to fail.
+        DB::transaction(function () use ($request, $member, $accrualService, $eligibility) {
+            // Same behavior as before — creation just lives in the shared
+            // service now so the Edit Member spouse flow uses the identical rule.
+            $eligibility->addDependent($member, $request->validated());
 
-        $this->syncGhpAmount($member, $accrualService);
+            $this->syncGhpAmount($member, $accrualService);
+        });
 
         return redirect()->route('members.show', $member)
             ->with('status', "Dependent added for {$member->code}. Eligible for the higher GHP amount starting the next coverage cycle.");
@@ -70,9 +78,11 @@ class DependentController extends Controller
     {
         abort_unless($dependent->member_id === $member->id, 404);
 
-        $dependent->update($request->validated());
+        DB::transaction(function () use ($request, $member, $dependent, $accrualService) {
+            $dependent->update($request->validated());
 
-        $this->syncGhpAmount($member, $accrualService);
+            $this->syncGhpAmount($member, $accrualService);
+        });
 
         return redirect()->route('members.show', $member)
             ->with('status', "Dependent updated for {$member->code}.");
@@ -83,9 +93,11 @@ class DependentController extends Controller
         abort_unless(auth()->user()->isAdmin(), 403);
         abort_unless($dependent->member_id === $member->id, 404);
 
-        $dependent->delete();
+        DB::transaction(function () use ($member, $dependent, $accrualService) {
+            $dependent->delete();
 
-        $this->syncGhpAmount($member, $accrualService);
+            $this->syncGhpAmount($member, $accrualService);
+        });
 
         return redirect()->route('members.show', $member)
             ->with('status', "Dependent removed for {$member->code}.");

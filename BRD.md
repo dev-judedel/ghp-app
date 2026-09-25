@@ -1,9 +1,11 @@
 # Business Requirements Document (BRD)
 
 **Project:** GHP — Group Health Plan Management System (`ghp-app`)
-**Document version:** 1.0
-**Last updated:** 2026-09-24
+**Document version:** 1.1
+**Last updated:** 2026-09-24 (synced through task.md §2.20)
 **Source of truth:** Actual application code, database migrations, routes, and `task.md` as of the date above.
+
+> Kept in sync with `task.md` on every project change, per standing instruction (see `task.md`'s header note) — not a point-in-time snapshot.
 
 ---
 
@@ -188,6 +190,8 @@ Requirement IDs are grouped by module. "Status" reflects the **actual current im
 | FR-DEP-003 | A dependent counts toward GHP eligibility if their relation is Son/Daughter/Child and they are under 21, or if their relation is anything else (e.g. spouse). | Dependents | ✅ Implemented |
 | FR-DEP-004 | A dependent added mid-cycle does **not** immediately raise the member's GHP amount; it becomes effective only from the start of the **next** coverage cycle. | Dependents | ✅ Implemented |
 | FR-DEP-005 | Dependents already on file before this timing rule existed, or created outside the standard "Add dependent" flow (e.g. via import), are always treated as immediately eligible (not retroactively time-gated). | Dependents | ✅ Implemented |
+| FR-DEP-006 | An admin can grant **Immediate Eligibility** to a still-pending dependent, moving that one dependent's eligibility date to today instead of waiting for the next coverage cycle (FR-DEP-004). Admin-only, one-time (cannot be granted twice), rejected if the dependent is already eligible or otherwise age-ineligible; does not touch the current `BenefitPeriod` row, Coverage Year History, or the Generate-button rule. | Dependents | ✅ Implemented |
+| FR-DEP-007 | An Edit Member action that changes a member's civil status to Married can add that member's spouse as a dependent (name, birthdate, Normal/Immediate eligibility) in the same save, using the existing Dependents schema (`relation = Spouse`). An existing spouse is never duplicated. | Dependents | ✅ Implemented |
 
 ### 5.5 Benefit Period / Accrual (BEN)
 
@@ -281,7 +285,7 @@ Requirement IDs are grouped by module. "Status" reflects the **actual current im
 | BR-003 | A dependent's relation of **Son, Daughter, or Child** is GHP-eligible only while under **age 21**; any other relation (e.g. spouse) is always eligible, subject to BR-004. |
 | BR-004 | A dependent added **mid-cycle** does not raise the GHP amount until the **start of the next coverage cycle** — there is no partial-cycle credit for a newly added dependent. |
 | BR-005 | `deduction_start_date` is always the **first day of the calendar month immediately following** `start_date` — the enrollment month itself is never deducted, and this is never directly editable by an admin. |
-| BR-006 | Monthly accrual = `ghp_amount / 12`, credited for each whole calendar month from `deduction_start_date` (or the cycle start, whichever is later) through the evaluation date, capped at the cycle end date. |
+| BR-006 | **Available GHP formula (flat-rate, current-tier):** `ghp_amount / 12 × months rendered`, where `ghp_amount` is the member's CURRENT tier (BR-002) as of the evaluation date and "months rendered" is every whole calendar month from `deduction_start_date` (or the cycle start, whichever is later) through the evaluation date, capped at the cycle end date. Deliberately **not** a month-by-month historical-rate calculation — see BR-020. |
 | BR-007 | **10% carry-forward**: a prior coverage period's `ghp_amount` carries forward at 10% into the next period, but **only if** that prior period had zero usage (`ghp_used == 0`). |
 | BR-008 | **Reimbursement Rule**: a reimbursement's `or_amount` can never be saved (on create or edit) if it would exceed the member's available GHP balance for the coverage period containing its `or_date`. Enforced inside a row-locked database transaction so two near-simultaneous submissions cannot jointly overdraw the balance. |
 | BR-009 | A **voided** reimbursement is excluded entirely from the "used" calculation (not merely capped) but remains visible on the member's record with its void reason and who voided it. |
@@ -295,6 +299,8 @@ Requirement IDs are grouped by module. "Status" reflects the **actual current im
 | BR-017 | Member email is required and validated for new members but remains optional (nullable) for legacy/existing member records so that unrelated edits are not blocked. |
 | BR-018 | Deleting a Department does not delete its assigned members — they become unassigned (`department_id` set to `null`). |
 | BR-019 | An unrecognized Division name entered on the Department form auto-creates a new Division, always defaulted to member type **Employee** (there is no UI to specify Agent at creation time via this path). |
+| BR-020 | **Available GHP recalculates retroactively across already-rendered months the instant a dependent becomes GHP-eligible** — e.g. 3 months already accrued at ₱300/mo (₱900) become 3 × ₱350 = ₱1,050 the moment eligibility changes (Normal next-cycle rollover, or an Immediate Eligibility grant), even though nothing new was earned for that already-elapsed time. This is the CURRENT, confirmed-intentional behavior (BR-006) — it was briefly changed to preserve historical months at their original rate, then explicitly reverted back to this flat-rate formula the same day at the client's request. Do not treat this as a bug without a fresh explicit request to change it again. |
+| BR-021 | **Dependent count never multiplies the GHP tier.** Eligibility is a boolean ("is at least one dependent currently eligible") via `resolveGhpAmount()`'s single call site — 1, 2, or 5 simultaneously-eligible dependents all resolve to the same ₱4,200/₱350, never ₱8,400/₱12,600/etc. Re-evaluating the same state repeatedly (page refresh, reopening a member) is deterministic and never accumulates, since the figure is always recomputed from current state rather than incremented. |
 
 ---
 
