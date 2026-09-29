@@ -86,6 +86,7 @@ Route::middleware(['auth', 'active'])->group(function () {
 
         Route::get('/data-quality', [DataQualityController::class, 'index'])->name('data-quality.index');
         Route::put('/benefit-periods/{benefitPeriod}', [BenefitPeriodController::class, 'update'])->name('benefit-periods.update');
+        Route::post('/members/{member}/benefit-periods/{benefitPeriod}/reimbursements/send', [BenefitPeriodController::class, 'sendReceipt'])->name('members.benefit-periods.reimbursements.send');
     });
 
     // Must stay after the /members/{member}/... POST routes above,

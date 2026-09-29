@@ -51,6 +51,7 @@ Per `task.md`, work is currently at a **stabilization / verification checkpoint*
 | Task | Source | Status |
 |---|---|---|
 | Run `php artisan migrate` to apply the two most recent migrations (`2026_09_24_100000_...` idempotent rewrite, `2026_09_24_200000_...` revert, plus `2026_09_24_110000_...` dependent eligibility fields, and `2026_09_21_100000_...` benefit_period_id backfill if not already applied) | task.md §2.9, §2.12, §2.13 | ⏳ Pending — not confirmed run in this environment |
+| Run `php artisan test --filter=DependentBenefitRecalculationTest` and `--filter=ImmediateEligibilityTest` (task.md §2.16: eligible dependent now recalculates the current period's GHP amount/Available in place, e.g. 3,600/1,800 -> 4,200/2,100 at 6 months rendered; no migration needed) | task.md §2.16 | ⏳ Pending — written, not yet run |
 | Run `php artisan test` to confirm all recently written/updated tests actually pass | task.md §2.8, §2.9, §2.10, §2.12, §2.13 | ⏳ Pending — not confirmed run in this environment |
 | Watch specifically for a unique-constraint error from the `..._200000_revert...` migration (would indicate an ambiguous voided-duplicate benefit-period row needing manual review) | task.md §2.13 | ⚠️ Needs Review if/when migration is run |
 | Re-run `ReimbursementManagementTest` / `AmountAdjustmentManagementTest` specifically, since `BenefitAccrualService` changed again after those tests were written | task.md §2.13 | ⏳ Pending |

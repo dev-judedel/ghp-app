@@ -397,4 +397,57 @@ class BenefitAccrualService
 
         return $exists ? $this->accrue($member, $asOf) : null;
     }
+
+    /**
+     * Brings the current cycle's ALREADY-GENERATED BenefitPeriod in line
+     * with dependent eligibility, but only when eligibility has actually
+     * changed the GHP amount (stored period amount != what resolveGhpAmount()
+     * now says). Never creates a period.
+     *
+     * This is how a dependent becoming eligible (Immediate Eligibility, or a
+     * dependent removed/edited so it no longer qualifies) shows up in the
+     * Benefit balance card straight away. It does NOT add a stored
+     * "+300" delta: accrue() recomputes ghp_amount / 12 x months rendered
+     * from the member's actual records (dependents, reimbursements, prior
+     * period), so
+     *   3,600 -> 4,200 with 6 months rendered  =>  1,800 -> 2,100
+     * falls out of the existing formula, existing deductions are preserved
+     * ("used" is always re-summed from reimbursements), and running it
+     * again is a no-op: the amounts already match, so it returns null and
+     * writes nothing. That is the duplicate-adjustment guard.
+     *
+     * Manual amount overrides (ghp_amount_is_manual) resolve to the stored
+     * amount, so they never trigger this. A hand-corrected period whose
+     * amount already matches is likewise left untouched.
+     *
+     * @return BenefitPeriod|null the refreshed period, or null if nothing needed changing
+     */
+    public function refreshCurrentPeriodIfAmountChanged(Member $member, ?CarbonInterface $asOf = null): ?BenefitPeriod
+    {
+        $asOf = $asOf ?? Carbon::now();
+
+        [$from, $to] = $this->coveragePeriod($member->member_type, $asOf);
+
+        $period = $member->benefitPeriods()
+            ->whereDate('from_date', $from->toDateString())
+            ->whereDate('to_date', $to->toDateString())
+            ->first();
+
+        if ($period === null) {
+            return null;
+        }
+
+        // Always evaluate against the dependents as they are in the DB now,
+        // not a relation loaded before the change.
+        $member->unsetRelation('dependents');
+        $member->load('dependents');
+
+        $resolved = $this->resolveGhpAmount($member, $asOf);
+
+        if (abs((float) $period->ghp_amount - $resolved) < 0.005) {
+            return null;
+        }
+
+        return $this->accrue($member, $asOf);
+    }
 }

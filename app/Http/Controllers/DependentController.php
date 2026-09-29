@@ -32,7 +32,9 @@ class DependentController extends Controller
         // service now so the Edit Member spouse flow uses the identical rule.
         $eligibility->addDependent($member, $request->validated());
 
-        $this->syncGhpAmount($member, $accrualService);
+        // Pending dependent => amount stays at the base rate, nothing is
+        // raised early; this only changes anything once one is eligible.
+        $eligibility->recalculateBenefit($member);
 
         return redirect()->route('members.show', $member)
             ->with('status', "Dependent added for {$member->code}. Eligible for the higher GHP amount starting the next coverage cycle.");
@@ -63,48 +65,37 @@ class DependentController extends Controller
         }
 
         return redirect()->route('members.show', $member)
-            ->with('status', "{$dependent->name} is now immediately eligible for {$member->code}. The GHP amount was updated by the standard calculation; the existing benefit period was not changed.");
+            ->with('status', "{$dependent->name} is now immediately eligible for {$member->code}. The GHP amount and available balance were recalculated by the standard calculation (GHP amount ÷ 12 × months rendered); no benefit period was generated, reopened or voided.");
     }
 
-    public function update(StoreDependentRequest $request, Member $member, Dependent $dependent, BenefitAccrualService $accrualService): RedirectResponse
+    public function update(StoreDependentRequest $request, Member $member, Dependent $dependent, DependentEligibilityService $eligibility): RedirectResponse
     {
         abort_unless($dependent->member_id === $member->id, 404);
 
         $dependent->update($request->validated());
 
-        $this->syncGhpAmount($member, $accrualService);
+        $eligibility->recalculateBenefit($member);
 
         return redirect()->route('members.show', $member)
             ->with('status', "Dependent updated for {$member->code}.");
     }
 
-    public function destroy(Member $member, Dependent $dependent, BenefitAccrualService $accrualService): RedirectResponse
+    public function destroy(Member $member, Dependent $dependent, DependentEligibilityService $eligibility): RedirectResponse
     {
         abort_unless(auth()->user()->isAdmin(), 403);
         abort_unless($dependent->member_id === $member->id, 404);
 
         $dependent->delete();
 
-        $this->syncGhpAmount($member, $accrualService);
+        $eligibility->recalculateBenefit($member);
 
         return redirect()->route('members.show', $member)
             ->with('status', "Dependent removed for {$member->code}.");
     }
 
-    /**
-     * The accrual engine recomputes ghp_amount live from current dependents
-     * when generating a period (see BenefitAccrualService::resolveGhpAmount)
-     * — it never reads members.ghp_amount directly for that, except when
-     * ghp_amount_is_manual is set (a manual amount adjustment is in effect),
-     * in which case resolveGhpAmount() returns the stored value unchanged
-     * and this call below is effectively a no-op. Either way, we keep
-     * members.ghp_amount in sync here so what's displayed on the member
-     * profile/list doesn't look stale/wrong between now and the next
-     * "Generate benefit period" click.
-     */
-    private function syncGhpAmount(Member $member, BenefitAccrualService $accrualService): void
-    {
-        $member->loadMissing('dependents');
-        $member->update(['ghp_amount' => $accrualService->resolveGhpAmount($member)]);
-    }
+    // Dependent changes all go through DependentEligibilityService::
+    // recalculateBenefit(): it keeps members.ghp_amount in sync (a manual
+    // override is returned unchanged by the engine, so that stays a no-op)
+    // and refreshes the current, already-generated benefit period only when
+    // eligibility actually changed its GHP amount.
 }

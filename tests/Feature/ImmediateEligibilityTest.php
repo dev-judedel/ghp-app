@@ -207,21 +207,32 @@ class ImmediateEligibilityTest extends TestCase
         $this->assertSame('2027-04-01', $normal->fresh()->eligibility_date->toDateString());
     }
 
-    // ---- Benefit period must not change ----
+    // ---- Benefit period: recalculated in place, never regenerated ----
 
-    public function test_granting_does_not_touch_the_benefit_period_or_reopen_generation(): void
+    public function test_granting_recalculates_the_existing_period_in_place_and_does_not_reopen_generation(): void
     {
         $admin = $this->admin();
         $member = $this->member();
         $member->load('dependents');
         $period = app(BenefitAccrualService::class)->accrue($member);
-        $before = $period->fresh()->only(['from_date', 'to_date', 'ghp_amount', 'ghp_available', 'ghp_used', 'updated_at']);
+        $original = $period->fresh();
+
+        // Frozen at 2026-06-15 with deduction start 2026-06-01: 1 month rendered.
+        $this->assertSame(3600.0, (float) $original->ghp_amount);
+        $this->assertSame(300.0, (float) $original->ghp_available);
 
         $spouse = $this->pendingSpouse($member, $admin);
         $this->actingAs($admin)->post(route('members.dependents.immediate-eligibility', [$member, $spouse]));
 
+        // Same single row (no second period, same cycle dates) ...
         $this->assertSame(1, BenefitPeriod::where('member_id', $member->id)->count());
-        $this->assertEquals($before, BenefitPeriod::findOrFail($period->id)->only(['from_date', 'to_date', 'ghp_amount', 'ghp_available', 'ghp_used', 'updated_at']));
+        $after = BenefitPeriod::findOrFail($period->id);
+        $this->assertSame($original->from_date->toDateString(), $after->from_date->toDateString());
+        $this->assertSame($original->to_date->toDateString(), $after->to_date->toDateString());
+
+        // ... recalculated by the existing formula: 4,200 / 12 x 1 month.
+        $this->assertSame(4200.0, (float) $after->ghp_amount);
+        $this->assertSame(350.0, (float) $after->ghp_available);
 
         // One period per cycle still holds: Generate is still rejected.
         $this->actingAs($admin)->post(route('members.generate-benefit-period', $member));

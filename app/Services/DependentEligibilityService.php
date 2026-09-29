@@ -19,11 +19,15 @@ use RuntimeException;
  *   - grantImmediate(): the administrator-controlled EXCEPTION — pulls that
  *     one dependent's eligibility_date forward to today.
  *
- * Neither touches BenefitPeriod rows in any way (no generate, no reset, no
- * reopen). The only GHP side effect is the same members.ghp_amount sync
- * DependentController::syncGhpAmount() has always done, computed by the one
- * existing engine (BenefitAccrualService::resolveGhpAmount) — there is no
- * second GHP calculation here.
+ * Neither generates, resets, reopens, voids or deletes a BenefitPeriod. The GHP
+ * side effects are computed by the one existing engine
+ * (BenefitAccrualService) — there is no second GHP calculation here:
+ *   1. the members.ghp_amount sync (syncGhpAmount()), as always, and
+ *   2. when that changes the amount for a period that is ALREADY generated,
+ *      the current period's ghp_amount / available balance are recomputed
+ *      from the member's records (recalculateBenefit()), so an eligible
+ *      dependent shows up in the Benefit balance immediately. Recomputed,
+ *      not incremented — running it twice changes nothing.
  */
 class DependentEligibilityService
 {
@@ -108,7 +112,7 @@ class DependentEligibilityService
                     $normalEligibilityDate ? $normalEligibilityDate->format('M d, Y') : 'n/a',
                 ));
 
-            $this->syncGhpAmount($member);
+            $this->recalculateBenefit($member);
 
             return $locked->refresh();
         });
@@ -127,6 +131,24 @@ class DependentEligibilityService
         $member->unsetRelation('dependents');
         $member->load('dependents');
         $member->update(['ghp_amount' => $this->accrual->resolveGhpAmount($member)]);
+    }
+
+    /**
+     * Full backend recalculation after ANY dependent change (added, edited,
+     * removed, made immediately eligible): sync members.ghp_amount, then
+     * refresh the current cycle's generated period IF the eligible-dependent
+     * outcome changed its GHP amount. Atomic, and idempotent (see
+     * BenefitAccrualService::refreshCurrentPeriodIfAmountChanged()).
+     *
+     * A dependent that is still pending leaves the amount at the base rate,
+     * so nothing is raised prematurely.
+     */
+    public function recalculateBenefit(Member $member): void
+    {
+        DB::transaction(function () use ($member) {
+            $this->syncGhpAmount($member);
+            $this->accrual->refreshCurrentPeriodIfAmountChanged($member);
+        });
     }
 
     /**

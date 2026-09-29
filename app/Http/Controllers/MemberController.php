@@ -120,8 +120,18 @@ class MemberController extends Controller
             fn ($period) => $period->from_date->isSameDay($currentCycleStart) && $period->to_date->isSameDay($currentCycleEnd)
         );
 
+        // Same rule the GHP calculation itself uses (Dependent::isGhpEligibleAsOf),
+        // evaluated as of today, so the count shown next to the Benefit balance
+        // can never disagree with the amount beside it. 'Pending' = passes the
+        // age/relation rule but is still waiting on the next benefit period.
+        $today = now();
+        $eligibleDependentsCount = $member->dependents->filter(fn ($d) => $d->isGhpEligibleAsOf($today))->count();
+        $pendingDependentsCount = $member->dependents->filter(fn ($d) => $d->eligibility_status === 'pending')->count();
+
         return view('members.show', [
             'member' => $member,
+            'eligibleDependentsCount' => $eligibleDependentsCount,
+            'pendingDependentsCount' => $pendingDependentsCount,
             'currentBenefitPeriod' => $currentBenefitPeriod,
             'currentCyclePeriod' => $currentCyclePeriod,
             'departments' => Department::orderBy('name')->get(),

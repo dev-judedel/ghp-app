@@ -846,7 +846,7 @@
                     </table>
 
                     <p class="hint" style="margin-top: 12px; margin-bottom: 0;">
-                        This bypasses the normal waiting rule for this dependent only, and is recorded in the activity log. It does not generate, change or reopen any benefit period.
+                        This bypasses the normal waiting rule for this dependent only, and is recorded in the activity log. The current benefit period's GHP amount and available balance are recalculated (GHP amount ÷ 12 × months rendered); deductions and history are kept, and no benefit period is generated, reopened or voided.
                     </p>
                     <p style="margin: 12px 0 0;"><strong>Are you sure you want to continue?</strong></p>
                 </div>

@@ -5,7 +5,7 @@ Use this as a quick reference before starting new work — check "Not Implemente
 before assuming something doesn't exist, and check "Known Issues" before
 re-diagnosing a problem that's already been flagged.
 
-**Last updated:** 2026-09-24 (Void/Delete/Search/Filter reverted — see §2.11)
+**Last updated:** 2026-09-29 (dependent eligibility now recalculates the current Benefit balance — see §2.16)
 
 ---
 
@@ -145,6 +145,31 @@ for Excel export — is no longer needed; that feature was built and then remove
 - **Tests:** new `GenerateBenefitPeriodButtonTest.php`; in `AmountAdjustmentManagementTest.php` the old `..._refreshes_the_current_benefit_period` test (which asserted the side-effect creation) is now two tests — refresh an existing period / never create a missing one.
 - **Known, deliberately NOT changed (out of scope):** `ReimbursementController::refreshCurrentPeriod()` still uses `accrue()`, so filing/editing/voiding a reimbursement can still create the current period; the daily `ghp:auto-generate-benefit-periods` job and the Members-list bulk "Generate" action also create periods by design — if the scheduler is running, every active member's current period will already exist and the button will correctly show disabled.
 - **Not yet run** — run `php artisan test`.
+
+### 2.16 Dependent becomes eligible -> GHP amount AND Available balance follow (prorated by months rendered)
+- **Gap found:** the Benefit balance card reads the STORED `benefit_periods` row. §2.14's Immediate Eligibility only synced `members.ghp_amount` and deliberately left that row alone, so the card stayed at ₱3,600 / ₱1,800 after a dependent became eligible.
+- **Fix (recompute, never add a delta):** new `BenefitAccrualService::refreshCurrentPeriodIfAmountChanged()` re-runs the existing `accrue()` for the current cycle's ALREADY-GENERATED period, but only when the eligible-dependent outcome changed its GHP amount. `accrue()` is the existing formula `ghp_amount / 12 x months rendered` (+ carry-forward, − used from actual reimbursements), so 3,600 -> 4,200 with 6 months rendered gives 1,800 -> 2,100 (+300 = 600 / 12 x 6) with no new calculation path. Deductions are re-summed from reimbursements (preserved); prior periods are never touched; no period is ever created, reopened, voided or deleted (one-per-cycle rule intact).
+- **No duplicates:** because it recomputes and no-ops when the stored amount already matches (returns null, writes nothing), repeating the grant, refreshing the page, or saving other member changes cannot re-add the benefit. `MemberController::show()` is read-only.
+- **Single entry point:** new `DependentEligibilityService::recalculateBenefit()` (transaction: `syncGhpAmount()` + the refresh above). Used by `grantImmediate()` (so the Edit Member "Immediate" spouse path gets it too) and by `DependentController::store()/update()/destroy()`; the controller's private `syncGhpAmount()` was removed. Adding a *pending* dependent changes nothing (amount stays base). Removing/editing so no eligible dependent remains lowers the current period back to the base rate (same rule, for consistency).
+- **Rules kept as-is (not changed):** dependents added mid-cycle still wait for the next cycle unless an admin uses Immediate Eligibility; manual GHP override (`ghp_amount_is_manual`) is never overridden; the age rule for children still applies; GHP rates are still the existing `BASE_GHP_AMOUNT`/`DEPENDENT_GHP_AMOUNT` constants (no configurable-rates table exists in this system).
+- **Multiple dependents:** the existing rule is ONE flat ₱4,200 for "1 or more eligible dependents" (`resolveGhpAmount()` / legacy `check_update_dependents`), not +₱600 per dependent. Kept, so a 2nd eligible dependent adds nothing. If the business wants per-dependent stacking that is a rate-rule change and needs an explicit decision.
+- **UI:** Benefit balance card gained an "Eligible dependents" row (with "+N pending"), computed with the same `isGhpEligibleAsOf()` rule as the calculation; GHP amount / Available / GHP monthly amount / Required amount already displayed. The Immediate Eligibility modal text no longer claims the period isn't changed.
+- **Supersedes** §2.14's "Benefit periods untouched ... the existing benefit_periods row is not rewritten" — the current period's amount/available are now recalculated in place (nothing else about §2.14 changed).
+- **No migration needed** (no schema change).
+- **Files:** `BenefitAccrualService.php`, `DependentEligibilityService.php`, `DependentController.php`, `MemberController.php` (`show()`), `members/show.blade.php`.
+- **Tests:** new `DependentBenefitRecalculationTest.php` (no dependent; 3,600->4,200 & 1,800->2,100; pending unchanged; multiple dependents; age-ineligible; refresh/repeat; service idempotence; deductions preserved; prior period untouched; removal; manual override; no period created). `ImmediateEligibilityTest.php`: the old "period is not touched" test was replaced by one asserting in-place recalculation (still 1 row, Generate still rejected).
+- **Not yet run** — run `php artisan test --filter=DependentBenefitRecalculationTest` and `--filter=ImmediateEligibilityTest`, then the full `php artisan test`.
+
+### 2.17 "Send" receipt by email on the Reimbursement records page
+- **What:** a **Send** button beside Print / Download PDF (admin-only) opens a modal (To = the member's saved email, read-only; attachment note; optional message). Sends the SAME PDF as Print/Download as an email attachment. Route `members.benefit-periods.reimbursements.send` (POST, admin group).
+- **Recipient can't be tampered with:** the address is read server-side from `members.email`; the request has no recipient field and any submitted `email`/`to` is ignored.
+- **"Email doesn't exist" checks (layered; a mailbox can't be proven to exist without delivering):** (1) no email on file -> blocked with a message, modal Send disabled; (2) invalid format or domain with no MX/DNS -> blocked (same rule as the member forms; DNS lookup skipped in `testing`); (3) the mail server's rejection at send time is caught (unknown user / 550 5.1.1 etc. -> "does not exist or can't accept mail", other failures -> generic "could not deliver"; raw server text is logged, not shown). Failure never reports success. **Limit:** servers that accept then bounce later can't be detected here.
+- **Audit:** every attempt is written to the activity log (`reimbursement-mail`, on the member: to, period, result sent/failed, reason).
+- **Also:** sent synchronously (not queued) so the result is known immediately; empty periods (no reimbursements) are not sent.
+- **IMPORTANT — mail config:** `.env` currently defaults to `MAIL_MAILER=log`, which delivers nothing (writes to `storage/logs/laravel.log`). Set real SMTP values in `.env` (see the comment added to `.env.example`) for emails to actually arrive.
+- **Refactor:** `BenefitPeriodController` now builds the PDF in one private `buildReceiptPdf()` used by Print, Download and Send.
+- **Files:** `BenefitPeriodController.php`, `Mail/ReimbursementReceiptMail.php` (new), `Http/Requests/SendReimbursementReceiptRequest.php` (new), `resources/views/mail/reimbursement-receipt.blade.php` (new), `benefit-periods/reimbursements.blade.php`, `routes/web.php`, `.env.example`.
+- **Tests:** new `SendReimbursementReceiptTest.php`. **Not yet run.** No migration needed.
 
 ### 2.7 Removed (per explicit request)
 - **Member export (CSV/PDF/Excel)**: was built in full, then removed at your request. Routes, view buttons, and the controller/PDF view were deleted from active use — the controller and PDF view are sitting in `_removed-by-claude/` at the project root (I can't truly delete files, only move/overwrite them; delete that folder yourself whenever convenient).
