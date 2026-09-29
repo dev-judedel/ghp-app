@@ -2,7 +2,7 @@
 
 **Project:** GHP — Group Health Plan Management System (`ghp-app`)
 **Document version:** 1.0
-**Last updated:** 2026-09-24
+**Last updated:** 2026-09-29
 **Primary sources:** `task.md`, `profile_features.md`, actual source code (controllers, models, migrations, requests, services), and the `tests/` directory.
 
 > **Status-verification note:** Per `task.md`, several of the most recent changes (§2.8–§2.13 below) are explicitly marked **"Not yet run"** by the developer who made them — meaning the migrations/tests were written from direct code inspection but have **not been confirmed to execute successfully** in this environment. This document treats those items as ⚠️ **Needs Review**, not ✅ Completed, until `php artisan migrate` and `php artisan test` have actually been run and confirmed passing.
@@ -41,6 +41,8 @@ Features confirmed actually implemented and working based on the current code (n
 - ✅ Legacy PostgreSQL data import console command (`ghp:import-legacy`)
 - ✅ Accrual engine validation console command (`ghp:validate-accrual`, read-only)
 - ✅ Daily scheduled benefit-period auto-generation job (registered; external trigger still required — see Pending)
+- ⚠️ **Editable GHP Benefit Setup / configurable coverage period** (task.md §2.18): Coverage year, Apply date, End date, Start date (deductions) and GHP amount are editable on Add member and (except the amount) Edit member; the engine follows each member's configured 12-month cycle instead of a hardcoded Apr–Mar / Jun–May one, rolls it forward yearly, and keeps existing members on the standard cycle. Generated history is never rewritten (overlapping changes are refused) and one-period-per-cycle still blocks duplicates. Code complete; **migration and tests not yet run**.
+- ⚠️ Immediate Eligibility for dependents + Dependent Spouse in Edit member (task.md §2.14), current-period recalculation when a dependent becomes eligible (§2.16), fix for the un-clickable Generate button (§2.15), and Send receipt by email (§2.17, needs real SMTP in `.env`) — all written, none confirmed run
 
 ---
 
@@ -53,6 +55,8 @@ Per `task.md`, work is currently at a **stabilization / verification checkpoint*
 | Run `php artisan migrate` to apply the two most recent migrations (`2026_09_24_100000_...` idempotent rewrite, `2026_09_24_200000_...` revert, plus `2026_09_24_110000_...` dependent eligibility fields, and `2026_09_21_100000_...` benefit_period_id backfill if not already applied) | task.md §2.9, §2.12, §2.13 | ⏳ Pending — not confirmed run in this environment |
 | Run `php artisan test --filter=DependentBenefitRecalculationTest` and `--filter=ImmediateEligibilityTest` (task.md §2.16: eligible dependent now recalculates the current period's GHP amount/Available in place, e.g. 3,600/1,800 -> 4,200/2,100 at 6 months rendered; no migration needed) | task.md §2.16 | ⏳ Pending — written, not yet run |
 | Run `php artisan test` to confirm all recently written/updated tests actually pass | task.md §2.8, §2.9, §2.10, §2.12, §2.13 | ⏳ Pending — not confirmed run in this environment |
+| Run `php artisan migrate` for `2026_09_29_100000_add_coverage_setup_to_members_and_benefit_periods` (adds `members.coverage_year` / `coverage_end_date`, `benefit_periods.coverage_year` + backfill), then `php artisan test --filter=CoverageSetupTest` and the full suite (the engine change touches reimbursement, dependent and adjustment tests) | task.md §2.18 | ⏳ Pending — written, not yet run |
+| Manually try the Add member / Edit member Benefit setup on screen: Employee vs Agent defaults, Coverage year ↔ End date staying in sync, the live "required this cycle" preview, and the validation messages | task.md §2.18 | ⏳ Pending |
 | Watch specifically for a unique-constraint error from the `..._200000_revert...` migration (would indicate an ambiguous voided-duplicate benefit-period row needing manual review) | task.md §2.13 | ⚠️ Needs Review if/when migration is run |
 | Re-run `ReimbursementManagementTest` / `AmountAdjustmentManagementTest` specifically, since `BenefitAccrualService` changed again after those tests were written | task.md §2.13 | ⏳ Pending |
 | Delete the `_removed-by-claude/` folder once its contents are confirmed no longer needed (orphaned export controller/view, reverted Void feature's request/test) | task.md §2.7, §2.13 | ⏳ Pending (manual cleanup decision, not automatic) |

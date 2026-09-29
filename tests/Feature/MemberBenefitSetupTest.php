@@ -126,16 +126,21 @@ class MemberBenefitSetupTest extends TestCase
         $this->assertSame('2027-04-01', $member->deduction_start_date->toDateString());
     }
 
-    public function test_a_submitted_deduction_start_date_is_ignored_and_always_recomputed(): void
+    /**
+     * SUPERSEDED rule: the deduction Start Date used to be ignored if
+     * submitted and always recomputed. It is now an editable input (Coverage
+     * Setup rework) — a valid submitted value is used, an invalid one (here,
+     * before the Apply Date) is rejected rather than silently replaced, and
+     * a blank one is still derived from start_date. See CoverageSetupTest.
+     */
+    public function test_an_invalid_submitted_deduction_start_date_is_rejected_not_silently_replaced(): void
     {
         $this->actingAs($this->admin())->post(route('members.store'), $this->validPayload([
             'start_date' => '2026-06-01',
-            'deduction_start_date' => '1999-01-01', // not a real field — must be ignored
-        ]));
+            'deduction_start_date' => '1999-01-01', // before the Apply Date (2026-04-01)
+        ]))->assertSessionHasErrors('deduction_start_date');
 
-        $member = Member::where('email', 'juan@example.test')->firstOrFail();
-
-        $this->assertSame('2026-07-01', $member->deduction_start_date->toDateString());
+        $this->assertDatabaseMissing('members', ['email' => 'juan@example.test']);
     }
 
     public function test_editing_a_member_recomputes_the_deduction_date_from_the_new_start_date(): void

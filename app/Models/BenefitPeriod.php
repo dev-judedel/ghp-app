@@ -11,7 +11,7 @@ use Spatie\Activitylog\LogOptions;
 use Spatie\Activitylog\Traits\LogsActivity;
 
 #[Fillable([
-    'member_id', 'from_date', 'to_date', 'ghp_amount', 'ghp_available',
+    'member_id', 'from_date', 'to_date', 'coverage_year', 'ghp_amount', 'ghp_available',
     'ghp_used', 'member_type', 'remarks', 'division_id', 'department_id',
 ])]
 class BenefitPeriod extends Model
@@ -23,6 +23,7 @@ class BenefitPeriod extends Model
         return [
             'from_date' => 'date',
             'to_date' => 'date',
+            'coverage_year' => 'integer',
             'ghp_amount' => 'decimal:2',
             'ghp_available' => 'decimal:2',
             'ghp_used' => 'decimal:2',

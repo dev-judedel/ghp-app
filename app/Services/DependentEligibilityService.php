@@ -44,7 +44,7 @@ class DependentEligibilityService
 
         return $member->dependents()->create($attributes + [
             'date_added' => $today->toDateString(),
-            'eligibility_date' => $this->accrual->resolveDependentEligibilityDate($member->member_type, $today)->toDateString(),
+            'eligibility_date' => $this->accrual->resolveDependentEligibilityDate($member, $today)->toDateString(),
         ]);
     }
 
@@ -77,7 +77,7 @@ class DependentEligibilityService
 
             $now = Carbon::now();
             $normalEligibilityDate = $locked->eligibility_date;
-            [$periodFrom, $periodTo] = $this->accrual->coveragePeriod($member->member_type, $now);
+            [$periodFrom, $periodTo] = $this->accrual->coveragePeriod($member, $now);
 
             // The model's own auto-log would record this as a bare
             // eligibility_date change. Suppress it and write ONE explicit

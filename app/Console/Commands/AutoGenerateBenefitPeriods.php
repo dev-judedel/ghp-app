@@ -14,7 +14,8 @@ use Illuminate\Console\Command;
  * accrual logic as the manual "Generate benefit period" button. This is
  * intentionally NOT hardcoded to "run only on Apr 1 / Jun 1" — asking
  * "does a period exist for today's coverage year?" naturally handles both
- * Employee (Apr 1) and Agent (Jun 1) cutover dates, new hires added
+ * Employee (Apr 1) and Agent (Jun 1) cutover dates, any custom coverage
+ * cycle a member was registered with (e.g. Jan 1), new hires added
  * mid-year, members reactivated after being inactive, and days the
  * scheduler didn't run (e.g. server was off on the actual cutover date).
  *
@@ -39,7 +40,9 @@ class AutoGenerateBenefitPeriods extends Command
         $refreshed = 0;
 
         foreach ($members as $member) {
-            [$from, $to] = $accrualService->coveragePeriod($member->member_type, now());
+            // The member's own configured cycle when they have one, the
+            // standard member-type cycle otherwise.
+            [$from, $to] = $accrualService->coveragePeriod($member, now());
 
             $alreadyExisted = $member->benefitPeriods->contains(
                 fn ($period) => $period->from_date->isSameDay($from) && $period->to_date->isSameDay($to)

@@ -3,6 +3,7 @@
 namespace App\Http\Requests;
 
 use App\Http\Requests\Concerns\HasEmailRule;
+use App\Http\Requests\Concerns\ValidatesCoverageSetup;
 use App\Models\Member;
 use App\Services\DependentEligibilityService;
 use Illuminate\Foundation\Http\FormRequest;
@@ -11,6 +12,7 @@ use Illuminate\Validation\Rule;
 class UpdateMemberRequest extends FormRequest
 {
     use HasEmailRule;
+    use ValidatesCoverageSetup;
 
     public function authorize(): bool
     {
@@ -40,7 +42,7 @@ class UpdateMemberRequest extends FormRequest
             $spouseBirthdateRules[] = 'required_with:spouse_name';
         }
 
-        return [
+        return $this->coverageRules() + [
             'code' => ['required', 'string', 'max:50', Rule::unique('members', 'code')->ignore($member?->id)],
             // Nullable (not required) here: legacy members imported before
             // this field existed may not have one yet, and editing an
@@ -56,8 +58,8 @@ class UpdateMemberRequest extends FormRequest
             'civil_status' => ['nullable', 'in:0,1'],
             'apply_date' => ['required', 'date'],
             'start_date' => ['required', 'date'],
-            // See StoreMemberRequest — deduction_start_date is always
-            // recomputed from start_date, never accepted directly.
+            // deduction_start_date / coverage_year / coverage_end_date: see
+            // coverageRules(). Blank Start Date = recomputed from start_date, as before.
             'division_id' => ['nullable', 'exists:divisions,id'],
             'department_id' => ['nullable', 'exists:departments,id'],
             'old_code' => ['nullable', 'string', 'max:50'],
@@ -108,7 +110,7 @@ class UpdateMemberRequest extends FormRequest
 
     public function messages(): array
     {
-        return [
+        return $this->coverageMessages() + [
             'code.unique' => 'A member with this code already exists.',
             'spouse_name.required' => 'Spouse name is required.',
             'spouse_name.required_with' => 'Spouse name is required.',

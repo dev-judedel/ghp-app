@@ -58,8 +58,8 @@ class ReimbursementController extends Controller
             $creditBack = 0.0;
 
             if (! $reimbursement->is_voided) {
-                [$oldFrom, $oldTo] = $accrualService->coveragePeriod($member->member_type, $reimbursement->or_date);
-                [$newFrom, $newTo] = $accrualService->coveragePeriod($member->member_type, $orDate);
+                [$oldFrom, $oldTo] = $accrualService->coveragePeriod($member, $reimbursement->or_date);
+                [$newFrom, $newTo] = $accrualService->coveragePeriod($member, $orDate);
 
                 if ($oldFrom->equalTo($newFrom) && $oldTo->equalTo($newTo)) {
                     $creditBack = (float) $reimbursement->or_amount;
@@ -179,7 +179,8 @@ class ReimbursementController extends Controller
 
     /**
      * Sets reimbursements.benefit_period_id to the BenefitPeriod row whose
-     * coverage range (Employees Apr–Mar, Agents Jun–May — see
+     * coverage range (the member's configured cycle, or the standard
+     * Employees Apr–Mar / Agents Jun–May one — see
      * BenefitAccrualService::coveragePeriod()) contains this
      * reimbursement's OR date. This is the reliable ID link the Coverage
      * Year History drill-down (BenefitPeriodController::reimbursements())
@@ -198,7 +199,7 @@ class ReimbursementController extends Controller
      */
     private function linkToBenefitPeriod(Member $member, Reimbursement $reimbursement, BenefitAccrualService $accrualService): void
     {
-        [$from, $to] = $accrualService->coveragePeriod($member->member_type, $reimbursement->or_date);
+        [$from, $to] = $accrualService->coveragePeriod($member, $reimbursement->or_date);
 
         $period = $member->benefitPeriods()
             ->whereDate('from_date', $from->toDateString())

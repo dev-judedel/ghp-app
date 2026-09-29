@@ -64,6 +64,17 @@ class BenefitAccrualService
     private const DEPENDENT_GHP_AMOUNT = 4200.0;
 
     /**
+     * The standard annual GHP amount for a member with no eligible
+     * dependent. Exposed so the Add Member form's default and the
+     * "is this amount a manual override?" check at registration read the
+     * same value the engine itself uses, instead of a second hardcoded 3600.
+     */
+    public function defaultGhpAmount(): float
+    {
+        return self::BASE_GHP_AMOUNT;
+    }
+
+    /**
      * First-day-of-the-month-after-$startDate, per the Deduction Date
      * business rule: the member's start month is never deducted — the
      * first deduction always falls on the 1st of the following calendar
@@ -85,11 +96,29 @@ class BenefitAccrualService
 
     /**
      * Returns [Carbon $from, Carbon $to] for the coverage year containing
-     * $referenceDate. Employees: Apr 1–Mar 31. Agents: Jun 1–May 31.
+     * $referenceDate.
+     *
+     * Pass a Member to honor that member's CONFIGURED cycle (see
+     * configuredCoveragePeriod()); a member with no configured cycle — every
+     * member that existed before the setup became editable, and any imported
+     * one — falls back to the standard member-type cycle below, unchanged.
+     * Pass a plain member-type int to ask for the standard cycle directly
+     * (Employees: Apr 1–Mar 31. Agents: Jun 1–May 31) — the default the Add
+     * Member form suggests, and what every pre-existing caller did.
      */
-    public function coveragePeriod(int $memberType, CarbonInterface $referenceDate): array
+    public function coveragePeriod(int|Member $subject, CarbonInterface $referenceDate): array
     {
-        $startMonth = $memberType === Member::MEMBER_TYPE_AGENT ? 6 : 4;
+        if ($subject instanceof Member) {
+            $configured = $this->configuredCoveragePeriod($subject, $referenceDate);
+
+            if ($configured !== null) {
+                return $configured;
+            }
+
+            $subject = $subject->member_type;
+        }
+
+        $startMonth = $subject === Member::MEMBER_TYPE_AGENT ? 6 : 4;
 
         $year = $referenceDate->month >= $startMonth
             ? $referenceDate->year
@@ -99,6 +128,90 @@ class BenefitAccrualService
         $to = $from->copy()->addYear()->subDay()->endOfDay();
 
         return [$from, $to];
+    }
+
+    /**
+     * Suggested Coverage year / Apply Date / End Date for each member type
+     * as of $asOf, keyed by member type — what the Add/Edit Member forms
+     * start from. Derived from the standard cycle logic, never hardcoded
+     * months; every value stays editable in the form.
+     *
+     * @return array<int, array{year: int, from: string, to: string}>
+     */
+    public function standardCycleDefaults(?CarbonInterface $asOf = null): array
+    {
+        $asOf = $asOf ?? Carbon::now();
+        $defaults = [];
+
+        foreach ([Member::MEMBER_TYPE_EMPLOYEE, Member::MEMBER_TYPE_AGENT] as $memberType) {
+            [$from, $to] = $this->coveragePeriod($memberType, $asOf);
+
+            $defaults[$memberType] = [
+                'year' => $from->year,
+                'from' => $from->toDateString(),
+                'to' => $to->toDateString(),
+            ];
+        }
+
+        return $defaults;
+    }
+
+    /**
+     * The member's own configured cycle containing $referenceDate, or null
+     * when none is configured (members.coverage_end_date is NULL).
+     *
+     * A configured End Date fixes the cycle's anchor: every cycle is exactly
+     * 12 months, the configured one starting on (End Date + 1 day − 1 year),
+     * and every cycle before/after it is that start moved by whole years.
+     * That is what lets the same setting cover April–March, January–December
+     * or anything else, and roll forward year after year without any
+     * hardcoded month. Consecutive cycles never overlap and never leave a gap.
+     *
+     * The Apply Date is NOT the cycle start: it is the day this member's
+     * coverage begins inside the cycle (a member who joins in June is still
+     * in the Apr–Mar cycle, prorated by Start Date — the existing rule).
+     */
+    public function configuredCoveragePeriod(Member $member, CarbonInterface $referenceDate): ?array
+    {
+        if ($member->coverage_end_date === null) {
+            return null;
+        }
+
+        return $this->cycleFromAnchor($this->coverageAnchor($member->coverage_end_date), $referenceDate);
+    }
+
+    /**
+     * First day of the 12-month cycle that ends on $endDate.
+     * (Mar 31, 2027 -> Apr 1, 2026;  Dec 31, 2026 -> Jan 1, 2026.)
+     */
+    public function coverageAnchor(CarbonInterface $endDate): Carbon
+    {
+        return Carbon::instance($endDate)->startOfDay()->addDay()->subYearsNoOverflow(1);
+    }
+
+    /**
+     * [$from, $to] of the anchor-aligned 12-month cycle containing $referenceDate.
+     */
+    private function cycleFromAnchor(Carbon $anchor, CarbonInterface $referenceDate): array
+    {
+        $ref = Carbon::instance($referenceDate)->startOfDay();
+
+        // Cycle k starts at anchor + k years. Start from the calendar-year
+        // difference and correct by at most a step or two either way.
+        $k = $ref->year - $anchor->year;
+
+        while ($anchor->copy()->addYearsNoOverflow($k)->greaterThan($ref)) {
+            $k--;
+        }
+
+        while ($anchor->copy()->addYearsNoOverflow($k + 1)->lessThanOrEqualTo($ref)) {
+            $k++;
+        }
+
+        return [
+            $anchor->copy()->addYearsNoOverflow($k)->startOfDay(),
+            $anchor->copy()->addYearsNoOverflow($k + 1)->subDay()->endOfDay(),
+        ];
     }
 
     /**
@@ -145,11 +258,14 @@ class BenefitAccrualService
      * is no partial-cycle credit, matching how ghp_amount itself is a
      * flat per-cycle rate rather than something accrued per dependent.
      */
-    public function resolveDependentEligibilityDate(int $memberType, CarbonInterface $dateAdded): Carbon
+    public function resolveDependentEligibilityDate(int|Member $subject, CarbonInterface $dateAdded): Carbon
     {
-        [$periodStart] = $this->coveragePeriod($memberType, $dateAdded);
+        // Day after the containing cycle ends == the next cycle's first day,
+        // for the standard member-type cycle (Apr 1 / Jun 1) and for any
+        // configured one alike.
+        [, $periodEnd] = $this->coveragePeriod($subject, $dateAdded);
 
-        return $periodStart->copy()->addYear();
+        return $periodEnd->copy()->addDay()->startOfDay();
     }
 
     /**
@@ -220,7 +336,7 @@ class BenefitAccrualService
     {
         $referenceDate = $referenceDate ?? Carbon::now();
 
-        [$from, $to] = $this->coveragePeriod($member->member_type, $referenceDate);
+        [$from, $to] = $this->coveragePeriod($member, $referenceDate);
 
         // Evaluated as of the cycle's own END, not $referenceDate —
         // dependent eligibility (see resolveDependentEligibilityDate()) is
@@ -267,7 +383,7 @@ class BenefitAccrualService
     {
         $asOf = $asOf ?? Carbon::now();
 
-        [$from, $to] = $this->coveragePeriod($member->member_type, $asOf);
+        [$from, $to] = $this->coveragePeriod($member, $asOf);
 
         $ghpAmount = $this->resolveGhpAmount($member, $asOf);
 
@@ -332,7 +448,7 @@ class BenefitAccrualService
      */
     public function availableBalanceFor(Member $member, CarbonInterface $orDate): array
     {
-        [, $periodEnd] = $this->coveragePeriod($member->member_type, $orDate);
+        [, $periodEnd] = $this->coveragePeriod($member, $orDate);
 
         $now = Carbon::now();
         $asOf = $now->lessThan($periodEnd) ? $now : $periodEnd->copy();
@@ -362,6 +478,10 @@ class BenefitAccrualService
                 'to_date' => $result['to']->toDateString(),
             ],
             [
+                // Labels the record with the coverage year its cycle began in
+                // (a configured cycle can start in any month, so this is
+                // stored rather than assumed from the member type).
+                'coverage_year' => $result['from']->year,
                 'ghp_amount' => $result['ghp_amount'],
                 'ghp_available' => $result['available'],
                 'ghp_used' => $result['used'],
@@ -388,7 +508,7 @@ class BenefitAccrualService
      */
     public function refreshCurrentPeriodIfGenerated(Member $member, ?CarbonInterface $asOf = null): ?BenefitPeriod
     {
-        [$from, $to] = $this->coveragePeriod($member->member_type, $asOf ?? Carbon::now());
+        [$from, $to] = $this->coveragePeriod($member, $asOf ?? Carbon::now());
 
         $exists = $member->benefitPeriods()
             ->whereDate('from_date', $from->toDateString())
@@ -426,7 +546,7 @@ class BenefitAccrualService
     {
         $asOf = $asOf ?? Carbon::now();
 
-        [$from, $to] = $this->coveragePeriod($member->member_type, $asOf);
+        [$from, $to] = $this->coveragePeriod($member, $asOf);
 
         $period = $member->benefitPeriods()
             ->whereDate('from_date', $from->toDateString())
@@ -449,5 +569,61 @@ class BenefitAccrualService
         }
 
         return $this->accrue($member, $asOf);
+    }
+
+    /**
+     * Why moving $member onto the coverage cycle that ends on $newEndDate
+     * would collide with benefit periods ALREADY generated, or null if the
+     * change is safe.
+     *
+     * Generated benefit history is never rewritten, re-dated or deleted by a
+     * configuration change. So a change that would put the member on a cycle
+     * calendar in which an existing period partly overlaps a cycle (rather
+     * than matching it exactly) is refused with an explanation, instead of
+     * leaving two overlapping periods that would count the same
+     * reimbursements twice. Only the cycles the change actually touches are
+     * checked — the first configured cycle and the one containing today — so
+     * old, unrelated rows (e.g. historical or data-quality-corrupted ones)
+     * can never block an edit.
+     *
+     * Leaving the End Date as it is (or setting the same one again) changes
+     * nothing and is always safe. Apply Date, Start Date (deduction) and the
+     * GHP amount do not move cycle boundaries and are not checked here.
+     */
+    public function coverageChangeConflict(Member $member, ?CarbonInterface $newEndDate): ?string
+    {
+        if ($newEndDate === null) {
+            return null;
+        }
+
+        if ($member->coverage_end_date !== null && $member->coverage_end_date->isSameDay($newEndDate)) {
+            return null;
+        }
+
+        $anchor = $this->coverageAnchor($newEndDate);
+
+        $touched = [
+            $this->cycleFromAnchor($anchor, $anchor),
+            $this->cycleFromAnchor($anchor, Carbon::now()),
+        ];
+
+        foreach ($member->benefitPeriods()->get() as $period) {
+            foreach ($touched as [$from, $to]) {
+                $overlaps = $period->from_date->lessThanOrEqualTo($to) && $period->to_date->greaterThanOrEqualTo($from);
+                $identical = $period->from_date->isSameDay($from) && $period->to_date->isSameDay($to);
+
+                if ($overlaps && ! $identical) {
+                    return sprintf(
+                        'The benefit period %s – %s is already generated for this member and would overlap the new coverage cycle (%s – %s). Generated benefit history is never rewritten or deleted, so this coverage period can\'t be applied.',
+                        $period->from_date->format('M d, Y'),
+                        $period->to_date->format('M d, Y'),
+                        $from->format('M d, Y'),
+                        $to->format('M d, Y'),
+                    );
+                }
+            }
+        }
+
+        return null;
     }
 }

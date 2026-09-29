@@ -2,7 +2,7 @@
 
 **Project:** GHP — Group Health Plan Management System (`ghp-app`)
 **Document version:** 1.0
-**Last updated:** 2026-09-24
+**Last updated:** 2026-09-29
 **Source of truth:** Actual application code, database migrations, routes, and `task.md` as of the date above.
 
 ---
@@ -169,7 +169,7 @@ Requirement IDs are grouped by module. "Status" reflects the **actual current im
 |---|---|---|---|
 | FR-MEM-001 | An admin can create a new member (Employee or Agent), with required last name, first name, email, apply date, start date, and GHP amount. | Member Mgmt | ✅ Implemented |
 | FR-MEM-002 | A new member's code is auto-generated (`ALSC-######`) unless the admin supplies one, which must be unique. | Member Mgmt | ✅ Implemented |
-| FR-MEM-003 | A member's `deduction_start_date` is always system-computed (first day of the month after `start_date`) and is never directly editable. | Member Mgmt | ✅ Implemented |
+| FR-MEM-003 | A member's `deduction_start_date` ("Start date (deductions)") defaults to the first day of the month after `start_date`, follows the member start date until the admin sets it, and is otherwise admin-editable; left blank it is computed by that rule. It must not be before the Apply date nor later than the day after the coverage End date. *(Supersedes the earlier "never directly editable" rule — task.md §2.18.)* | Member Mgmt | ✅ Implemented (tests not yet run) |
 | FR-MEM-004 | Member email is optional on existing/legacy records but required and validated (RFC format + MX record check outside testing) on new members; unique across members. | Member Mgmt | ✅ Implemented |
 | FR-MEM-005 | An admin can edit an existing member's details. | Member Mgmt | ✅ Implemented |
 | FR-MEM-006 | An admin can deactivate (with a required resignation date) or reactivate (date automatically cleared) a member, individually or in bulk. | Member Mgmt | ✅ Implemented |
@@ -178,6 +178,9 @@ Requirement IDs are grouped by module. "Status" reflects the **actual current im
 | FR-MEM-009 | Both `apply_date` and `deduction_start_date`-driving `start_date` are required fields on create and edit (previously optional — hardened to prevent unusable member records). | Member Mgmt | ✅ Implemented |
 | FR-MEM-010 | An admin can bulk-import members from a CSV file against a documented template; invalid rows are skipped and reported individually rather than failing the whole import. | Member Mgmt / Import | ✅ Implemented |
 | FR-MEM-011 | An admin can export the member list (CSV/PDF/Excel). | Member Mgmt / Export | ❌ Removed at client request — not in active application |
+| FR-MEM-012 | When adding a member, an admin can set and edit the GHP Benefit Setup: **Coverage year, Apply date, End date, Start date (deductions) and GHP amount**, with defaults from the standard cycle logic. Coverage year and End date are also editable on Edit member. All are validated server-side (End date after Apply date; Coverage year consistent with the cycle's start; Apply date inside the cycle; GHP amount a non-negative amount with at most 2 decimals). | Member Mgmt / Benefit Setup | ✅ Implemented (tests not yet run) |
+| FR-MEM-013 | A member with no configured coverage period (all existing and imported members) keeps the standard member-type cycle; a configured period can be changed but not cleared. | Member Mgmt / Benefit Setup | ✅ Implemented (tests not yet run) |
+| FR-MEM-014 | Changing a member's End date is refused if it would partly overlap a benefit period that has already been generated; generated benefit and deduction history is never deleted, re-dated or overwritten by a configuration change. | Member Mgmt / Benefit Setup | ✅ Implemented (tests not yet run) |
 
 ### 5.4 Dependent Management (DEP)
 
@@ -193,7 +196,7 @@ Requirement IDs are grouped by module. "Status" reflects the **actual current im
 
 | ID | Requirement | Module | Status |
 |---|---|---|---|
-| FR-BEN-001 | The system computes a member's coverage year as Apr 1–Mar 31 for Employees and Jun 1–May 31 for Agents. | Benefit Accrual | ✅ Implemented |
+| FR-BEN-001 | The system computes a member's coverage year as their **configured** 12-month cycle (ending on the member's End date, rolling forward one year at a time), or — when none is configured — the standard Apr 1–Mar 31 for Employees and Jun 1–May 31 for Agents. Each generated benefit period is labelled with the coverage year its cycle begins in. | Benefit Accrual | ✅ Implemented (configurable part: tests not yet run) |
 | FR-BEN-002 | The base GHP amount is ₱3,600/year; ₱4,200/year if the member has at least one GHP-eligible dependent as of the evaluation date. | Benefit Accrual | ✅ Implemented |
 | FR-BEN-003 | Accrual is pro-rated monthly from the member's `deduction_start_date`, counting whole calendar months elapsed within the current cycle. | Benefit Accrual | ✅ Implemented |
 | FR-BEN-004 | A prior coverage year's unused GHP amount carries forward at 10%, but only if that prior period had zero usage. | Benefit Accrual | ✅ Implemented |
@@ -276,12 +279,12 @@ Requirement IDs are grouped by module. "Status" reflects the **actual current im
 
 | ID | Rule |
 |---|---|
-| BR-001 | Coverage year: **Employees** run Apr 1–Mar 31; **Agents** run Jun 1–May 31 (hardcoded business calendar, not configurable). |
+| BR-001 | Coverage year: by default **Employees** run Apr 1–Mar 31 and **Agents** run Jun 1–May 31. A member may be given a **configured** 12-month cycle instead: it ends on the member's End date and begins the day after it, a year earlier (e.g. End Dec 31 → Jan 1–Dec 31); cycles before/after are the same window ± whole years. The Apply date is when the member's coverage begins *inside* the cycle, not the cycle start. Members with no configured cycle keep the defaults. |
 | BR-002 | Base GHP amount is **₱3,600/year**; with at least one GHP-eligible dependent it is **₱4,200/year** — unless a manual override is in effect. |
 | BR-003 | A dependent's relation of **Son, Daughter, or Child** is GHP-eligible only while under **age 21**; any other relation (e.g. spouse) is always eligible, subject to BR-004. |
 | BR-004 | A dependent added **mid-cycle** does not raise the GHP amount until the **start of the next coverage cycle** — there is no partial-cycle credit for a newly added dependent. |
-| BR-005 | `deduction_start_date` is always the **first day of the calendar month immediately following** `start_date` — the enrollment month itself is never deducted, and this is never directly editable by an admin. |
-| BR-006 | Monthly accrual = `ghp_amount / 12`, credited for each whole calendar month from `deduction_start_date` (or the cycle start, whichever is later) through the evaluation date, capped at the cycle end date. |
+| BR-005 | `deduction_start_date` **defaults to** the first day of the calendar month immediately following `start_date` — the enrollment month itself is not deducted by default. An admin may set a different Start date (deductions) (within the Apply date … End date + 1 day); a blank value falls back to the default rule. Changing it never changes the Apply date or End date. |
+| BR-006 | Monthly accrual = `ghp_amount / 12`, credited for each whole calendar month from `deduction_start_date` (or the cycle start, whichever is later) through the evaluation date, capped at the cycle end date. `ghp_amount` is the **annual** amount for a full 12-month cycle (e.g. ₱3,600 with 9 applicable months = ₱2,700). |
 | BR-007 | **10% carry-forward**: a prior coverage period's `ghp_amount` carries forward at 10% into the next period, but **only if** that prior period had zero usage (`ghp_used == 0`). |
 | BR-008 | **Reimbursement Rule**: a reimbursement's `or_amount` can never be saved (on create or edit) if it would exceed the member's available GHP balance for the coverage period containing its `or_date`. Enforced inside a row-locked database transaction so two near-simultaneous submissions cannot jointly overdraw the balance. |
 | BR-009 | A **voided** reimbursement is excluded entirely from the "used" calculation (not merely capped) but remains visible on the member's record with its void reason and who voided it. |
@@ -305,11 +308,11 @@ Requirement IDs are grouped by module. "Status" reflects the **actual current im
 | Entity (table) | Purpose | Key fields |
 |---|---|---|
 | `users` | System login accounts (Admin/Staff) | `user_code` (ALSC-######, unique), `name`, `email` (unique), `role` (admin/user), `is_active`, `profile_photo_path`, `password` |
-| `members` | Plan members (Employees/Agents) | `code` (ALSC-###### or legacy code, unique), `email` (nullable, unique), `member_type` (0=Employee,1=Agent), `last_name`, `first_name`, `middle_name`, `address`, `birthdate`, `civil_status`, `apply_date`, `start_date`, `deduction_start_date`, `ghp_amount`, `ghp_amount_is_manual`, `is_active`, `resignation_date`, `division_id`, `department_id`, `old_code`, `remarks`; soft-deletable |
+| `members` | Plan members (Employees/Agents) | `code` (ALSC-###### or legacy code, unique), `email` (nullable, unique), `member_type` (0=Employee,1=Agent), `last_name`, `first_name`, `middle_name`, `address`, `birthdate`, `civil_status`, `apply_date`, `start_date`, `deduction_start_date`, `ghp_amount`, `ghp_amount_is_manual`, `coverage_year` and `coverage_end_date` (nullable; NULL = standard member-type cycle), `is_active`, `resignation_date`, `division_id`, `department_id`, `old_code`, `remarks`; soft-deletable |
 | `dependents` | Members' dependents | `member_id`, `name`, `relation` (free text), `birthdate`, `date_added`, `eligibility_date` |
 | `divisions` | Division lookup (Employee/Agent scoped) | `member_type`, `name`; unique on `(member_type, name)` |
 | `departments` | Department lookup | `name` (unique), `division_id` |
-| `benefit_periods` | One row per member per coverage cycle — the authoritative accrual record | `member_id`, `from_date`, `to_date`, `ghp_amount`, `ghp_available`, `ghp_used`, `member_type`, `division_id`, `department_id`, `remarks`; unique on `(member_id, from_date, to_date)` |
+| `benefit_periods` | One row per member per coverage cycle — the authoritative accrual record | `member_id`, `from_date`, `to_date`, `coverage_year`, `ghp_amount`, `ghp_available`, `ghp_used`, `member_type`, `division_id`, `department_id`, `remarks`; unique on `(member_id, from_date, to_date)` |
 | `benefit_ledger` | Legacy-parallel ledger table (imported 1:1 from `t_avail_used_ghp`); kept separate from `benefit_periods` for import fidelity — flagged as a likely future merge candidate, not actively written to by the current application logic beyond import | `member_id`, `from_date`, `to_date`, `ghp_amount`, `available_amount`, `used_amount`; unique on `(member_id, from_date, to_date)` |
 | `benefit_amount_adjustments` | Structured audit trail for manual GHP amount overrides | `member_id`, `old_amount`, `new_amount`, `reason`, `request_reference`, `requested_at`, `recorded_by` |
 | `reimbursements` | Medical reimbursement claims | `member_id`, `benefit_period_id`, `or_no`, `or_date`, `or_amount`, `hospital_name`, `description`, `remarks`, `is_voided`, `voided_at`, `voided_reason`, `voided_by`; soft-deletable |
@@ -335,8 +338,8 @@ Requirement IDs are grouped by module. "Status" reflects the **actual current im
 ## 8. Workflow / Process
 
 ### 8.1 Member Onboarding & Benefit Setup
-1. Admin creates a member (Members → Add Member), providing name, type, apply date, start date, GHP details.
-2. System computes `deduction_start_date` = 1st of the month after `start_date`.
+1. Admin creates a member (Members → Add Member), providing name, type and the Benefit setup: Coverage year, Apply date, End date, member Start date, Start date (deductions) and GHP amount — all pre-filled from the standard cycle for the chosen member type and all editable.
+2. System validates the setup and stores it; the Start date (deductions) defaults to the 1st of the month after the member start date unless the admin set it.
 3. System assigns a unique member code unless one is supplied.
 4. Member's initial GHP amount reflects the base rate (₱3,600) unless an eligible dependent is added or a manual adjustment is made.
 5. Admin (or the daily scheduled job) generates the member's first benefit period once eligible.

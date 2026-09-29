@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\BenefitPeriod;
 use App\Models\Member;
+use App\Services\BenefitAccrualService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\View\View;
 
@@ -33,13 +34,23 @@ class DataQualityController extends Controller
     {
         $minYear = 2005;
         $maxYear = now()->year + 1;
+        $accrual = app(BenefitAccrualService::class);
 
         return BenefitPeriod::query()
             ->with('member')
             ->get()
-            ->filter(function (BenefitPeriod $period) use ($minYear, $maxYear) {
+            ->filter(function (BenefitPeriod $period) use ($minYear, $maxYear, $accrual) {
                 if ($period->from_date->year < $minYear || $period->from_date->year > $maxYear) {
                     return true;
+                }
+
+                // A member with a configured coverage period (custom End date)
+                // has cycles that begin on THEIR anchor month/day, not Apr/Jun,
+                // so compare against that instead of flagging them as corrupted.
+                if ($period->member?->coverage_end_date !== null) {
+                    $anchor = $accrual->coverageAnchor($period->member->coverage_end_date);
+
+                    return $period->from_date->month !== $anchor->month || $period->from_date->day !== $anchor->day;
                 }
 
                 $expectedMonth = $period->member_type === Member::MEMBER_TYPE_AGENT ? 6 : 4;

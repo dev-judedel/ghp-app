@@ -49,6 +49,12 @@ class MemberController extends Controller
         // it's just a suggested starting value, and stays fully editable.
         [$currentCycleStart, $currentCycleEnd] = $accrualService->coveragePeriod(Member::MEMBER_TYPE_EMPLOYEE, now());
 
+        // Suggested Coverage year / Apply Date / End Date for each member
+        // type (never hardcoded months). The Add Member form starts on these
+        // and the admin may change any of them; picking Employee/Agent swaps
+        // in that type's suggestion.
+        $cycleDefaults = $accrualService->standardCycleDefaults();
+
         $viewData = [
             'members' => $members,
             'search' => $search,
@@ -59,6 +65,8 @@ class MemberController extends Controller
             'departments' => Department::orderBy('name')->get(),
             'divisions' => Division::orderBy('member_type')->orderBy('name')->get(),
             'defaultApplyDate' => $currentCycleStart,
+            'cycleDefaults' => $cycleDefaults,
+            'defaultGhpAmount' => $accrualService->defaultGhpAmount(),
             'currentCycleStart' => $currentCycleStart,
             'currentCycleEnd' => $currentCycleEnd,
         ];
@@ -83,11 +91,20 @@ class MemberController extends Controller
         $data = $request->validated();
         $data['code'] = $request->filled('code') ? $data['code'] : Member::generateUniqueCode();
         $data['is_active'] = $request->boolean('is_active', true);
-        // deduction_start_date is never accepted from the request (see
-        // StoreMemberRequest) — always derived from start_date, so it can
-        // never drift from the business rule regardless of what a client
-        // might try to submit.
-        $data['deduction_start_date'] = $accrualService->resolveDeductionStartDate($data['start_date']);
+        // "Start Date" (the first deduction) is now an editable input: use it
+        // when the admin set one. Left blank, it is derived from start_date
+        // exactly as before — the 1st of the following month, never the start
+        // month itself (BenefitAccrualService::resolveDeductionStartDate()).
+        $data['deduction_start_date'] = filled($data['deduction_start_date'] ?? null)
+            ? $data['deduction_start_date']
+            : $accrualService->resolveDeductionStartDate($data['start_date']);
+
+        // The engine only honors members.ghp_amount when it is flagged manual
+        // (otherwise it recomputes 3,600 / 4,200 from dependents). So an amount
+        // that differs from the standard one is registered as a manual
+        // override — the same mechanism "Adjust GHP amount" uses — and the
+        // standard amount stays automatic (dependents still raise it).
+        $data['ghp_amount_is_manual'] = abs((float) $data['ghp_amount'] - $accrualService->defaultGhpAmount()) > 0.004;
 
         $member = Member::create($data);
 
@@ -109,7 +126,7 @@ class MemberController extends Controller
 
         $currentBenefitPeriod = $member->benefitPeriods->first();
 
-        [$currentCycleStart, $currentCycleEnd] = $accrualService->coveragePeriod($member->member_type, now());
+        [$currentCycleStart, $currentCycleEnd] = $accrualService->coveragePeriod($member, now());
 
         // Distinct from $currentBenefitPeriod above: that's just the MOST
         // RECENT period on record (still shown as-is on the Benefit balance
@@ -139,6 +156,7 @@ class MemberController extends Controller
             'activityFeed' => $this->buildMemberActivityFeed($member),
             'currentCycleStart' => $currentCycleStart,
             'currentCycleEnd' => $currentCycleEnd,
+            'cycleDefaults' => $accrualService->standardCycleDefaults(),
             'requiredGhp' => $member->deduction_start_date ? $accrualService->requiredAmountForCycle($member) : null,
         ]);
     }
@@ -197,10 +215,22 @@ class MemberController extends Controller
 
         try {
             DB::transaction(function () use ($request, $member, $accrualService, $eligibility, $validated, $memberData, $createSpouse, &$notices) {
-                $member->update($memberData + [
+                $member->update(array_merge($memberData, [
                     'is_active' => $request->boolean('is_active', false),
-                    'deduction_start_date' => $accrualService->resolveDeductionStartDate($validated['start_date']),
-                ]);
+                    // Start Date as submitted, else derived from start_date (as before).
+                    'deduction_start_date' => filled($validated['deduction_start_date'] ?? null)
+                        ? $validated['deduction_start_date']
+                        : $accrualService->resolveDeductionStartDate($validated['start_date']),
+                ]));
+
+                // Coverage/Start-date settings drive the current period's
+                // months, so an ALREADY-generated one is recomputed from the
+                // records (never created here, never touched otherwise — a
+                // manual correction on the period survives unrelated edits).
+                if ($member->wasChanged(['apply_date', 'coverage_year', 'coverage_end_date', 'deduction_start_date']) && $member->is_active) {
+                    $member->load('dependents', 'reimbursements', 'benefitPeriods');
+                    $accrualService->refreshCurrentPeriodIfGenerated($member);
+                }
 
                 if (! $createSpouse) {
                     return;
@@ -305,7 +335,7 @@ class MemberController extends Controller
                 ->with('status', "Can't generate a benefit period — {$member->code} has no deduction start date on file.");
         }
 
-        [$cycleStart, $cycleEnd] = $accrualService->coveragePeriod($member->member_type, now());
+        [$cycleStart, $cycleEnd] = $accrualService->coveragePeriod($member, now());
 
         try {
             $result = DB::transaction(function () use ($member, $accrualService, $cycleStart, $cycleEnd) {

@@ -5,7 +5,10 @@
 @php
     $hasReimbursementErrors = $errors->any() && $errors->has('or_amount');
     $hasDependentErrors = $errors->any() && ($errors->has('name') || $errors->has('relation'));
-    $hasMemberEditErrors = $errors->any() && ($errors->has('code') || $errors->has('email') || $errors->has('spouse_name') || $errors->has('spouse_birthdate')) && old('_form') === 'edit_member';
+    $hasMemberEditErrors = $errors->any() && $errors->hasAny([
+        'code', 'email', 'spouse_name', 'spouse_birthdate',
+        'apply_date', 'start_date', 'coverage_year', 'coverage_end_date', 'deduction_start_date',
+    ]) && old('_form') === 'edit_member';
     // Relation is free text — same case-insensitive spouse match DependentEligibilityService::hasSpouse() uses.
     $memberHasSpouse = $member->dependents->contains(fn ($d) => strtolower(trim($d->relation)) === 'spouse');
     $hasVoidErrors = $errors->any() && $errors->has('reason');
@@ -53,6 +56,14 @@
                     <td>{{ optional($member->birthdate)->format('M d, Y') ?? '—' }} @if($member->age) ({{ $member->age }} yrs) @endif</td>
                     <th>Civil status</th>
                     <td>{{ $member->civil_status === 1 ? 'Married' : 'Single' }}</td>
+                </tr>
+                <tr>
+                    <th>Coverage cycle</th>
+                    <td colspan="3">
+                        {{ $currentCycleStart->format('M d, Y') }} &ndash; {{ $currentCycleEnd->format('M d, Y') }}
+                        &nbsp;&middot;&nbsp; Coverage year {{ $currentCycleStart->year }}
+                        &nbsp;&middot;&nbsp; {{ $member->coverage_end_date ? 'Custom period' : 'Standard '.($member->member_type === \App\Models\Member::MEMBER_TYPE_AGENT ? 'agent' : 'employee').' cycle' }}
+                    </td>
                 </tr>
                 <tr>
                     <th>Deduction start</th>
@@ -245,7 +256,7 @@
             <p class="hint" style="margin-top: -8px; margin-bottom: 10px;">Click a period to view its reimbursement records.</p>
             <table>
                 <thead>
-                    <tr><th>Period</th><th class="num">GHP amount</th><th class="num">Used</th><th class="num">Available</th></tr>
+                    <tr><th>Period</th><th>Coverage year</th><th class="num">GHP amount</th><th class="num">Used</th><th class="num">Available</th></tr>
                 </thead>
                 <tbody>
                     @foreach ($member->benefitPeriods as $period)
@@ -255,6 +266,7 @@
                                     {{ $period->from_date->format('M Y') }} &ndash; {{ $period->to_date->format('M Y') }}
                                 </a>
                             </td>
+                            <td class="code">{{ $period->coverage_year ?? $period->from_date->year }}</td>
                             <td class="num amount">&#8369;{{ number_format($period->ghp_amount, 2) }}</td>
                             <td class="num amount">&#8369;{{ number_format($period->ghp_used, 2) }}</td>
                             <td class="num amount">&#8369;{{ number_format($period->ghp_available, 2) }}</td>
@@ -1025,19 +1037,40 @@
                     <h3 style="margin: 18px 0 10px;">Benefit setup</h3>
                     <div style="display: flex; gap: 12px;">
                         <div class="field" style="flex: 1;">
-                            <label for="edit_apply_date">GHP apply date <span class="error">*</span></label>
+                            <label for="edit_coverage_year">Coverage year</label>
+                            <input type="number" id="edit_coverage_year" name="coverage_year" value="{{ old('coverage_year', $member->coverage_year) }}" min="2000" max="2100" step="1" placeholder="{{ $currentCycleStart->year }}" oninput="onEditCoverageYearInput()">
+                        </div>
+                        <div class="field" style="flex: 1;">
+                            <label for="edit_apply_date">Apply date <span class="error">*</span></label>
                             <input type="date" id="edit_apply_date" name="apply_date" value="{{ old('apply_date', optional($member->apply_date)->toDateString()) }}" required>
                         </div>
                         <div class="field" style="flex: 1;">
-                            <label for="edit_start_date">Member start date <span class="error">*</span></label>
-                            <input type="date" id="edit_start_date" name="start_date" value="{{ old('start_date', optional($member->start_date)->toDateString()) }}" required oninput="updateEditDeductionPreview()">
+                            <label for="edit_coverage_end_date">End date</label>
+                            <input type="date" id="edit_coverage_end_date" name="coverage_end_date" value="{{ old('coverage_end_date', optional($member->coverage_end_date)->toDateString()) }}" oninput="onEditCoverageEndInput()">
                         </div>
                     </div>
                     <p class="hint" style="margin-top: -8px; margin-bottom: 12px;">
-                        First deduction date: <strong id="edit_deduction_preview">{{ optional($member->deduction_start_date)->format('F d, Y') ?? '—' }}</strong>
-                        (auto-calculated: the 1st of the month after Start Date, never the start month itself — not directly editable)
-                        &nbsp;&middot;&nbsp;
-                        GHP cycle: <strong>{{ $currentCycleStart->format('M d, Y') }} &ndash; {{ $currentCycleEnd->format('M d, Y') }}</strong>
+                        @if ($member->coverage_end_date)
+                            This member has a custom coverage period. It can be changed but not cleared. The Apply date must fall inside it, and a change is refused if it would overlap a benefit period that was already generated — generated history is never rewritten or deleted.
+                        @else
+                            Leave Coverage year and End date blank to keep the standard {{ $member->member_type === \App\Models\Member::MEMBER_TYPE_AGENT ? 'agent (Jun–May)' : 'employee (Apr–Mar)' }} cycle. Fill both in to give this member a custom 12-month period (the Apply date must then fall inside it).
+                        @endif
+                    </p>
+
+                    <div style="display: flex; gap: 12px;">
+                        <div class="field" style="flex: 1;">
+                            <label for="edit_start_date">Member start date <span class="error">*</span></label>
+                            <input type="date" id="edit_start_date" name="start_date" value="{{ old('start_date', optional($member->start_date)->toDateString()) }}" required oninput="onEditMemberStartInput()">
+                        </div>
+                        <div class="field" style="flex: 1;">
+                            <label for="edit_deduction_start_date">Start date (deductions)</label>
+                            <input type="date" id="edit_deduction_start_date" name="deduction_start_date" value="{{ old('deduction_start_date', optional($member->deduction_start_date)->toDateString()) }}" oninput="onEditDeductionInput()">
+                        </div>
+                    </div>
+                    <p class="hint" style="margin-top: -8px; margin-bottom: 12px;">
+                        Start date (deductions) is the first deduction. Changing the member start date moves it to the 1st of the following month unless you set it yourself; it never changes the Apply date or End date.
+                        <br>
+                        GHP cycle: <strong id="edit_cycle_preview" data-standard="{{ $currentCycleStart->format('M d, Y') }} – {{ $currentCycleEnd->format('M d, Y') }}">{{ $currentCycleStart->format('M d, Y') }} &ndash; {{ $currentCycleEnd->format('M d, Y') }}</strong>
                         <br>
                         GHP amount (currently &#8369;{{ number_format($member->ghp_amount, 2) }}{{ $member->ghp_amount_is_manual ? ', manual override' : ', automatic' }}) isn't edited here — use "Adjust GHP amount" on the Benefit balance card above.
                     </p>
@@ -1094,21 +1127,83 @@
 
             toggleSpouseSection();
 
-            // Same live-preview mirror as the Add Member modal (see
-            // members/index.blade.php) — display only, server is authoritative.
-            function updateEditDeductionPreview() {
-                const startInput = document.getElementById('edit_start_date');
-                const preview = document.getElementById('edit_deduction_preview');
+            // Benefit setup helpers for this modal — same conventions as the Add
+            // Member modal (members/index.blade.php). Suggestions/preview only;
+            // ValidatesCoverageSetup and BenefitAccrualService are authoritative.
+            // A cycle ends on the End date and begins the day after it, a year
+            // earlier; Coverage year is the year it begins in.
+            const editCycleDefaults = @json($cycleDefaults);
+            let editDeductionTouched = false;
 
-                if (! startInput || ! startInput.value || ! preview) {
+            const editPad = (n) => String(n).padStart(2, '0');
+            const editIso = (d) => `${d.getFullYear()}-${editPad(d.getMonth() + 1)}-${editPad(d.getDate())}`;
+            const editParse = (s) => (s ? new Date(s + 'T00:00:00') : null);
+            const editLong = (d) => d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: '2-digit' });
+
+            function editCycleStartFromEnd(end) {
+                const next = new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1);
+
+                return new Date(next.getFullYear() - 1, next.getMonth(), next.getDate());
+            }
+
+            function refreshEditBenefitSetup() {
+                const preview = document.getElementById('edit_cycle_preview');
+                const end = editParse(document.getElementById('edit_coverage_end_date').value);
+
+                preview.textContent = end
+                    ? `${editLong(editCycleStartFromEnd(end))} \u2013 ${editLong(end)}`
+                    : preview.dataset.standard;
+            }
+
+            function onEditCoverageYearInput() {
+                const year = parseInt(document.getElementById('edit_coverage_year').value, 10);
+
+                if (! year) {
                     return;
                 }
 
-                const start = new Date(startInput.value + 'T00:00:00');
-                const deduction = new Date(start.getFullYear(), start.getMonth() + 1, 1);
+                // Keep the cycle's month/day (the member's own End date if set,
+                // else the standard cycle for their type) and move it to that year.
+                let end = editParse(document.getElementById('edit_coverage_end_date').value);
 
-                preview.textContent = deduction.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+                if (! end) {
+                    const type = document.querySelector('#editMemberModal input[name=member_type]:checked')?.value ?? '0';
+                    end = editParse((editCycleDefaults[type] || editCycleDefaults[0]).to);
+                }
+
+                const anchor = editCycleStartFromEnd(end);
+                document.getElementById('edit_coverage_end_date').value = editIso(new Date(year + 1, anchor.getMonth(), anchor.getDate() - 1));
+                refreshEditBenefitSetup();
             }
+
+            function onEditCoverageEndInput() {
+                const end = editParse(document.getElementById('edit_coverage_end_date').value);
+
+                if (end) {
+                    document.getElementById('edit_coverage_year').value = editCycleStartFromEnd(end).getFullYear();
+                }
+
+                refreshEditBenefitSetup();
+            }
+
+            // Follows the member start date (1st of the next month, the standing
+            // rule) until the admin sets the deduction Start date themselves.
+            // Never runs on load, so a stored value is never silently changed.
+            function onEditMemberStartInput() {
+                const start = editParse(document.getElementById('edit_start_date').value);
+
+                if (! start || editDeductionTouched) {
+                    return;
+                }
+
+                document.getElementById('edit_deduction_start_date').value = editIso(new Date(start.getFullYear(), start.getMonth() + 1, 1));
+            }
+
+            function onEditDeductionInput() {
+                editDeductionTouched = true;
+            }
+
+            refreshEditBenefitSetup();
         </script>
     @endif
 @endsection

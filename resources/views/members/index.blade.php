@@ -6,7 +6,10 @@
     // 'active' is the implicit default (see MemberController::index), so it
     // shouldn't count as a "filter applied" badge — only deviations from it do.
     $activeFilterCount = collect([$type, $departmentId, $divisionId, $status !== 'active' ? $status : null])->filter()->count();
-    $hasMemberCreationErrors = $errors->any() && ($errors->has('email') || $errors->has('code'));
+    $hasMemberCreationErrors = $errors->any() && $errors->hasAny([
+        'email', 'code', 'apply_date', 'start_date', 'ghp_amount',
+        'coverage_year', 'coverage_end_date', 'deduction_start_date',
+    ]);
     $hasImportErrors = $errors->any() && $errors->has('csv_file');
     $importReport = session('import_report');
 @endphp
@@ -228,31 +231,65 @@
                         <label><input type="checkbox" name="is_active" value="1" @checked(old('is_active', true)) style="width: auto; margin-right: 6px;"> Active</label>
                     </div>
 
+                    @php
+                        // Suggested cycle for the selected member type (never hardcoded
+                        // months — BenefitAccrualService::standardCycleDefaults()). Every
+                        // value is editable; a saved value only sticks if it validates.
+                        $selectedType = (string) old('member_type', '0') === '1' ? 1 : 0;
+                        $suggested = $cycleDefaults[$selectedType];
+                        $suggestedDeduction = rescue(
+                            fn () => \Carbon\Carbon::parse(old('start_date', now()->toDateString()))->startOfMonth()->addMonthNoOverflow()->toDateString(),
+                            now()->startOfMonth()->addMonthNoOverflow()->toDateString(),
+                            false
+                        );
+                    @endphp
+
                     <h3 style="margin: 18px 0 10px;">Benefit setup</h3>
                     <div style="display: flex; gap: 12px;">
                         <div class="field" style="flex: 1;">
-                            <label for="apply_date">GHP apply date <span class="error">*</span></label>
-                            <input type="date" id="apply_date" name="apply_date" value="{{ old('apply_date', $defaultApplyDate->toDateString()) }}" required>
-                            <p class="hint" style="margin-top: 4px;">Defaults to the current GHP cycle's start date — editable if needed.</p>
+                            <label for="coverage_year">Coverage year <span class="error">*</span></label>
+                            <input type="number" id="coverage_year" name="coverage_year" value="{{ old('coverage_year', $suggested['year']) }}" min="2000" max="2100" step="1" required oninput="onCoverageYearInput()">
+                            <p class="hint" style="margin-top: 4px;">The year the GHP cycle begins.</p>
                         </div>
+                        <div class="field" style="flex: 1;">
+                            <label for="apply_date">Apply date <span class="error">*</span></label>
+                            <input type="date" id="apply_date" name="apply_date" value="{{ old('apply_date', $suggested['from']) }}" required oninput="refreshBenefitSetup()">
+                            <p class="hint" style="margin-top: 4px;">When the member's GHP coverage begins.</p>
+                        </div>
+                        <div class="field" style="flex: 1;">
+                            <label for="coverage_end_date">End date <span class="error">*</span></label>
+                            <input type="date" id="coverage_end_date" name="coverage_end_date" value="{{ old('coverage_end_date', $suggested['to']) }}" required oninput="onCoverageEndInput()">
+                            <p class="hint" style="margin-top: 4px;">Last day of the 12-month GHP cycle.</p>
+                        </div>
+                    </div>
+
+                    <div style="display: flex; gap: 12px;">
                         <div class="field" style="flex: 1;">
                             <label for="start_date">Member start date <span class="error">*</span></label>
-                            <input type="date" id="start_date" name="start_date" value="{{ old('start_date', now()->toDateString()) }}" required oninput="updateDeductionPreview()">
-                            <p class="hint" style="margin-top: 4px;">When the member started/was added — kept separate from Apply Date.</p>
+                            <input type="date" id="start_date" name="start_date" value="{{ old('start_date', now()->toDateString()) }}" required oninput="onMemberStartInput()">
+                            <p class="hint" style="margin-top: 4px;">When the member started/was added.</p>
                         </div>
                         <div class="field" style="flex: 1;">
-                            <label for="ghp_amount">GHP amount</label>
-                            <input type="number" id="ghp_amount" name="ghp_amount" value="{{ old('ghp_amount', 3600) }}" step="0.01" min="0" required>
+                            <label for="deduction_start_date">Start date (deductions) <span class="error">*</span></label>
+                            <input type="date" id="deduction_start_date" name="deduction_start_date" value="{{ old('deduction_start_date', $suggestedDeduction) }}" required oninput="onDeductionInput()">
+                            <p class="hint" style="margin-top: 4px;">First deduction. Follows the member start date (1st of the next month) until you change it.</p>
+                        </div>
+                        <div class="field" style="flex: 1;">
+                            <label for="ghp_amount">GHP amount <span class="error">*</span></label>
+                            <input type="number" id="ghp_amount" name="ghp_amount" value="{{ old('ghp_amount', $defaultGhpAmount) }}" step="0.01" min="0" required oninput="refreshBenefitSetup()">
+                            <p class="hint" style="margin-top: 4px;">Annual amount for a full 12-month cycle.</p>
                         </div>
                     </div>
 
                     <div class="field">
                         <p class="hint" style="margin: 0;">
-                            First deduction date: <strong id="deduction_preview">&mdash;</strong>
+                            GHP cycle: <strong id="cycle_preview">&mdash;</strong>
                             &nbsp;&middot;&nbsp;
-                            GHP cycle: <strong>{{ $currentCycleStart->format('M d, Y') }} &ndash; {{ $currentCycleEnd->format('M d, Y') }}</strong>
+                            Deductions: <strong id="months_preview">&mdash;</strong>
+                            &nbsp;&middot;&nbsp;
+                            Required this cycle: <strong id="required_preview">&mdash;</strong>
                         </p>
-                        <p class="hint" style="margin-top: 2px;">The first deduction always falls on the 1st of the month after the start date above — the start month itself is never deducted. Calculated automatically, not directly editable. Base GHP amount is ₱3,600; ₱4,200 if the member has an eligible dependent (add dependents after saving).</p>
+                        <p class="hint" style="margin-top: 2px;">Preview only. The balance accrues monthly (amount &divide; 12) from the Start date (deductions) through the End date. The standard amount is &#8369;{{ number_format($defaultGhpAmount, 0) }}, and &#8369;4,200 once the member has an eligible dependent (add dependents after saving). A different amount is saved as a manual amount. Changing these dates never rewrites benefit periods that were already generated.</p>
                     </div>
 
                     <div class="field" style="margin-bottom: 0;">
@@ -524,27 +561,157 @@
             }
 
             /**
-             * Live preview only — mirrors BenefitAccrualService::
-             * resolveDeductionStartDate() in JS purely so the admin sees
-             * the computed date update as they pick a start date. The
-             * server recomputes this itself from start_date on submit and
-             * never trusts whatever the client displays or would send.
+             * Benefit setup helpers (Add member). Convenience only: they suggest
+             * values and show a preview. Every rule is enforced server-side
+             * (StoreMemberRequest / ValidatesCoverageSetup) and the accrual math
+             * is BenefitAccrualService's, never this script's.
+             *
+             * A cycle is 12 months. It ends on the End date and therefore begins
+             * the day after it, a year earlier (same anchor rule as
+             * BenefitAccrualService::coverageAnchor()). Coverage year is the year
+             * that cycle begins in, so the three stay consistent as you edit.
              */
-            function updateDeductionPreview() {
-                const startInput = document.getElementById('start_date');
-                const preview = document.getElementById('deduction_preview');
+            const cycleDefaults = @json($cycleDefaults);
+            let coverageTouched = @json(old('coverage_year') !== null || old('coverage_end_date') !== null || old('apply_date') !== null);
+            let deductionTouched = @json(old('deduction_start_date') !== null);
 
-                if (! startInput || ! startInput.value || ! preview) {
+            const el = (id) => document.getElementById(id);
+            const pad = (n) => String(n).padStart(2, '0');
+            const toIso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+            const parseIso = (s) => (s ? new Date(s + 'T00:00:00') : null);
+            const longDate = (d) => d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: '2-digit' });
+            const peso = (n) => '\u20B1' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+            function cycleStartFromEnd(end) {
+                const next = new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1);
+
+                return new Date(next.getFullYear() - 1, next.getMonth(), next.getDate());
+            }
+
+            function followDeductionFromMemberStart() {
+                const start = parseIso(el('start_date').value);
+
+                if (! start || deductionTouched) {
                     return;
                 }
 
-                const start = new Date(startInput.value + 'T00:00:00');
-                const deduction = new Date(start.getFullYear(), start.getMonth() + 1, 1);
-
-                preview.textContent = deduction.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+                // The business rule: never the start month, always the 1st of the next one.
+                el('deduction_start_date').value = toIso(new Date(start.getFullYear(), start.getMonth() + 1, 1));
             }
 
-            updateDeductionPreview();
+            function selectedMemberType() {
+                const checked = document.querySelector('#single-add-section input[name=member_type]:checked');
+
+                return checked ? checked.value : '0';
+            }
+
+            function onMemberTypeInput() {
+                if (coverageTouched || ! cycleDefaults[selectedMemberType()]) {
+                    return;
+                }
+
+                const d = cycleDefaults[selectedMemberType()];
+                el('coverage_year').value = d.year;
+                el('apply_date').value = d.from;
+                el('coverage_end_date').value = d.to;
+                refreshBenefitSetup();
+            }
+
+            function onCoverageYearInput() {
+                coverageTouched = true;
+
+                const year = parseInt(el('coverage_year').value, 10);
+                const end = parseIso(el('coverage_end_date').value);
+
+                if (year && end) {
+                    // Keep the cycle's month/day, move it to the chosen year.
+                    const anchor = cycleStartFromEnd(end);
+                    const from = new Date(year, anchor.getMonth(), anchor.getDate());
+                    const to = new Date(year + 1, anchor.getMonth(), anchor.getDate() - 1);
+                    const apply = parseIso(el('apply_date').value);
+
+                    el('coverage_end_date').value = toIso(to);
+
+                    if (! apply || apply < from || apply > to) {
+                        el('apply_date').value = toIso(from);
+                    }
+                }
+
+                refreshBenefitSetup();
+            }
+
+            function onCoverageEndInput() {
+                coverageTouched = true;
+
+                const end = parseIso(el('coverage_end_date').value);
+
+                if (end) {
+                    const from = cycleStartFromEnd(end);
+                    const apply = parseIso(el('apply_date').value);
+
+                    el('coverage_year').value = from.getFullYear();
+
+                    if (! apply || apply < from || apply > end) {
+                        el('apply_date').value = toIso(from);
+                    }
+                }
+
+                refreshBenefitSetup();
+            }
+
+            function onMemberStartInput() {
+                followDeductionFromMemberStart();
+                refreshBenefitSetup();
+            }
+
+            function onDeductionInput() {
+                deductionTouched = true;
+                refreshBenefitSetup();
+            }
+
+            function refreshBenefitSetup() {
+                const end = parseIso(el('coverage_end_date').value);
+                const ded = parseIso(el('deduction_start_date').value);
+                const amount = parseFloat(el('ghp_amount').value);
+
+                if (! end) {
+                    el('cycle_preview').textContent = '\u2014';
+                    el('months_preview').textContent = '\u2014';
+                    el('required_preview').textContent = '\u2014';
+
+                    return;
+                }
+
+                const from = cycleStartFromEnd(end);
+                el('cycle_preview').textContent = `${longDate(from)} \u2013 ${longDate(end)}`;
+
+                if (! ded) {
+                    el('months_preview').textContent = '\u2014';
+                    el('required_preview').textContent = '\u2014';
+
+                    return;
+                }
+
+                // Same counting as BenefitAccrualService::countAccruedMonths(): whole
+                // calendar months from the later of (cycle start, first deduction)
+                // through the cycle end.
+                const accrualStart = ded > from ? ded : from;
+                const months = accrualStart > end
+                    ? 0
+                    : (end.getFullYear() - accrualStart.getFullYear()) * 12 + (end.getMonth() - accrualStart.getMonth()) + 1;
+
+                el('months_preview').textContent = `${months} month(s) from ${longDate(accrualStart)}`;
+                el('required_preview').textContent = isNaN(amount) ? '\u2014' : peso(Math.round(amount / 12 * months * 100) / 100);
+            }
+
+            document.querySelectorAll('#single-add-section input[name=member_type]').forEach((radio) => {
+                radio.addEventListener('change', onMemberTypeInput);
+            });
+
+            // Only the very first load of a fresh form auto-fills; after a failed
+            // save the server-rendered (old) values are left exactly as entered.
+            followDeductionFromMemberStart();
+            refreshBenefitSetup();
 
             @if ($hasMemberCreationErrors)
                 showAddMemberTab('single');

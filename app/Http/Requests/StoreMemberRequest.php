@@ -3,12 +3,14 @@
 namespace App\Http\Requests;
 
 use App\Http\Requests\Concerns\HasEmailRule;
+use App\Http\Requests\Concerns\ValidatesCoverageSetup;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
 class StoreMemberRequest extends FormRequest
 {
     use HasEmailRule;
+    use ValidatesCoverageSetup;
 
     public function authorize(): bool
     {
@@ -17,7 +19,7 @@ class StoreMemberRequest extends FormRequest
 
     public function rules(): array
     {
-        return [
+        return $this->coverageRules() + [
             // Optional: if the admin leaves this blank, MemberController::store()
             // generates one (Member::generateUniqueCode(), format ALSC-######).
             // If they type one in, it's used as-is once validated here.
@@ -32,11 +34,12 @@ class StoreMemberRequest extends FormRequest
             'civil_status' => ['nullable', 'in:0,1'],
             'apply_date' => ['required', 'date'],
             'start_date' => ['required', 'date'],
-            // No 'deduction_start_date' rule — it's always computed
-            // server-side from start_date (see MemberController::store()
-            // and BenefitAccrualService::resolveDeductionStartDate()),
-            // never accepted directly from the request.
-            'ghp_amount' => ['required', 'numeric', 'min:0'],
+            // deduction_start_date ("Start Date") is now an optional, editable
+            // input (see coverageRules()). When left blank it is still computed
+            // server-side from start_date — the 1st of the following month —
+            // exactly as before (MemberController::store() and
+            // BenefitAccrualService::resolveDeductionStartDate()).
+            'ghp_amount' => ['required', 'numeric', 'min:0', 'max:9999999.99', 'decimal:0,2'],
             'division_id' => ['nullable', 'exists:divisions,id'],
             'department_id' => ['nullable', 'exists:departments,id'],
             'old_code' => ['nullable', 'string', 'max:50'],
@@ -47,8 +50,13 @@ class StoreMemberRequest extends FormRequest
 
     public function messages(): array
     {
-        return [
+        return $this->coverageMessages() + [
             'code.unique' => 'A member with this code already exists.',
+            'ghp_amount.required' => 'GHP amount is required.',
+            'ghp_amount.numeric' => 'GHP amount must be a valid amount.',
+            'ghp_amount.min' => 'GHP amount cannot be negative.',
+            'ghp_amount.max' => 'GHP amount is too large.',
+            'ghp_amount.decimal' => 'GHP amount can have at most 2 decimal places.',
         ];
     }
 }
