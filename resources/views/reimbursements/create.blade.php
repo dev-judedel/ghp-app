@@ -55,7 +55,7 @@
                 <div class="field" style="flex: 1;">
                     <label for="or_amount">Amount</label>
                     <input type="number" id="or_amount" name="or_amount" value="{{ old('or_amount') }}" step="0.01" min="0.01" required>
-                    <p class="hint">Available balance: &#8369;{{ number_format($balance['available'], 2) }}. Amounts above this will still be recorded in full — see note after submitting.</p>
+                    <p class="hint">Available balance: &#8369;{{ number_format($balance['available'], 2) }}. The amount isn't limited by it — the member only needs a positive available balance to file.</p>
                 </div>
             </div>
 

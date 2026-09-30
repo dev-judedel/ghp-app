@@ -8,6 +8,7 @@ use Illuminate\Mail\Mailable;
 use Illuminate\Mail\Mailables\Attachment;
 use Illuminate\Mail\Mailables\Content;
 use Illuminate\Mail\Mailables\Envelope;
+use Illuminate\Support\Collection;
 
 /**
  * The reimbursement receipt PDF (same document as Print / Download PDF),
@@ -24,6 +25,11 @@ class ReimbursementReceiptMail extends Mailable
         public readonly float $total,
         public readonly ?string $note,
         public readonly string $sentBy,
+        // Automatic excess GHP total of the active claims (tracking only) and
+        // the records themselves, so the email body can list each claim's
+        // Available GHP and Excess Deduction. Never part of $total.
+        public readonly float $excessTotal = 0.0,
+        public readonly Collection $reimbursements = new Collection(),
     ) {
     }
 

@@ -15,6 +15,8 @@
         table.data th { background: #0F5C50; color: #fff; text-align: left; padding: 5px 7px; font-size: 8.5px; text-transform: uppercase; }
         table.data td { padding: 5px 7px; border-bottom: 1px solid #DCE3DF; font-size: 9.5px; }
         .num { text-align: right; font-family: 'DejaVu Sans Mono', monospace; }
+        /* Excess GHP: red on screen AND in print (fixed hex, no theme variables). */
+        tr.excess td { color: #C62828; font-weight: bold; }
         .ledger { width: 60%; margin-top: 4px; }
         .ledger td { padding: 5px 0; border-bottom: 1px dashed #DCE3DF; font-size: 11px; }
         .ledger td.amt { text-align: right; font-family: 'DejaVu Sans Mono', monospace; font-weight: bold; }
@@ -97,14 +99,17 @@
         <p>No reimbursements on file.</p>
     @else
         <table class="data">
-            <thead><tr><th>OR date</th><th>OR no.</th><th>Hospital</th><th class="num">Amount</th></tr></thead>
+            <thead><tr><th>OR date</th><th>OR no.</th><th>Hospital</th><th class="num">Amount</th><th class="num">Available GHP</th><th class="num">Excess Deduction</th></tr></thead>
             <tbody>
                 @foreach ($member->reimbursements as $reimbursement)
-                    <tr>
+                    {{-- Red ONLY for an active claim whose automatic excess GHP is above zero. --}}
+                    <tr class="{{ $reimbursement->hasExcess() ? 'excess' : '' }}">
                         <td>{{ $reimbursement->or_date->format('M d, Y') }}</td>
                         <td>{{ $reimbursement->or_no ?: '—' }}</td>
                         <td>{{ $reimbursement->hospital_name ?: '—' }}</td>
                         <td class="num">&#8369;{{ number_format($reimbursement->or_amount, 2) }}</td>
+                        <td class="num">{{ $reimbursement->available_ghp !== null ? '₱'.number_format($reimbursement->available_ghp, 2) : '—' }}</td>
+                        <td class="num">&#8369;{{ number_format($reimbursement->excess_amount, 2) }}</td>
                     </tr>
                 @endforeach
             </tbody>

@@ -3,6 +3,8 @@
 @section('title', 'Reimbursements — '.$benefitPeriod->from_date->format('M Y').' to '.$benefitPeriod->to_date->format('M Y'))
 
 @section('content')
+    @include('members._excess-styles')
+
     <div style="margin-bottom: 16px;">
         <a href="{{ route('members.show', $member) }}">&larr; Back to {{ $member->full_name }}</a>
     </div>
@@ -35,6 +37,13 @@
                 <span class="label">Total reimbursed (this period)</span>
                 <span class="amount ledger">&#8369;{{ number_format($total, 2) }}</span>
             </div>
+            @if ($excessTotal > 0)
+                {{-- Automatic excess GHP. Tracking only: not part of the total above, not GHP usage, not subtracted from Available GHP. --}}
+                <div class="ledger-row excess-line">
+                    <span class="label">Excess deduction (tracking only)</span>
+                    <span class="amount ledger">&#8369;{{ number_format($excessTotal, 2) }}</span>
+                </div>
+            @endif
         </div>
     </div>
 
@@ -60,17 +69,33 @@
                         <th>OR no.</th>
                         <th>Hospital</th>
                         <th class="num">Amount</th>
+                        <th class="num">Available GHP</th>
+                        <th class="num">Excess Deduction</th>
                         <th>Status</th>
                     </tr>
                 </thead>
                 <tbody>
                     @foreach ($reimbursements as $reimbursement)
-                        <tr style="{{ $reimbursement->is_voided ? 'opacity: 0.55;' : '' }}">
+                        {{-- Red ONLY for an active claim whose automatic excess GHP is above zero. --}}
+                        <tr @if ($reimbursement->hasExcess()) data-excess="1" class="excess-row" @endif style="{{ $reimbursement->is_voided ? 'opacity: 0.55;' : '' }}">
                             <td>{{ $reimbursement->or_date->format('F Y') }}</td>
                             <td>{{ $reimbursement->or_date->format('M d, Y') }}</td>
                             <td class="code">{{ $reimbursement->or_no ?: '—' }}</td>
                             <td>{{ $reimbursement->hospital_name ?: '—' }}</td>
                             <td class="num amount" style="{{ $reimbursement->is_voided ? 'text-decoration: line-through;' : '' }}">&#8369;{{ number_format($reimbursement->or_amount, 2) }}</td>
+                            <td class="num amount">{{ $reimbursement->available_ghp !== null ? '₱'.number_format($reimbursement->available_ghp, 2) : '—' }}</td>
+                            <td class="num amount">
+                                @if ($reimbursement->hasExcess())
+                                    <span class="excess-badge">&#8369;{{ number_format($reimbursement->excess_amount, 2) }}</span>
+                                @else
+                                    &#8369;{{ number_format($reimbursement->excess_amount, 2) }}
+                                @endif
+                                @if ($reimbursement->hasCoveredExcess())
+                                    <div style="font-size: 11px; font-weight: normal; color: var(--ink-muted);">
+                                        remaining &middot; original &#8369;{{ number_format($reimbursement->original_excess_amount, 2) }}, covered &#8369;{{ number_format($reimbursement->excess_covered_amount, 2) }}
+                                    </div>
+                                @endif
+                            </td>
                             <td>
                                 <span class="badge {{ $reimbursement->is_voided ? 'badge-warn' : 'badge-ok' }}">
                                     {{ $reimbursement->is_voided ? 'Voided' : 'Active' }}
@@ -90,9 +115,60 @@
                     <span class="label">Total reimbursement amount</span>
                     <span class="amount ledger">&#8369;{{ number_format($total, 2) }}</span>
                 </div>
+                <div class="ledger-row {{ $excessTotal > 0 ? 'excess-line' : '' }}">
+                    <span class="label">Total excess deduction (remaining)</span>
+                    <span class="amount ledger">&#8369;{{ number_format($excessTotal, 2) }}</span>
+                </div>
+                @if ($excessCoveredTotal > 0)
+                    <div class="ledger-row">
+                        <span class="label">Excess covered by dependent benefit (original &#8369;{{ number_format($excessOriginalTotal, 2) }})</span>
+                        <span class="amount ledger">&#8369;{{ number_format($excessCoveredTotal, 2) }}</span>
+                    </div>
+                @endif
             </div>
+
+            <p class="hint" style="margin-top: 10px; margin-bottom: 0;">
+                Excess deduction = reimbursement amount &minus; the Available GHP at the time it was filed. It is calculated automatically when a reimbursement is filed (nothing is entered by hand) and is recorded for tracking and reporting only: it is not a reimbursement, not a GHP contribution, and does not change GHP usage, the available balance or the original GHP requirements.
+            </p>
         @endif
     </div>
+
+    {{-- Older excess deductions that were recorded by hand before excess GHP became automatic. Read-only history: kept, never deleted, never counted as GHP usage. Shown only when this period has any. --}}
+    @if ($excessDeductions->isNotEmpty())
+        <div class="card excess-card">
+            <div class="card-head">
+                <div>
+                    <span class="eyebrow excess-note">{{ $excessDeductions->count() }} record(s) &middot; historical, tracking only</span>
+                    <h2>Previously recorded excess deductions</h2>
+                </div>
+            </div>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Deduction month</th>
+                        <th>Benefit period</th>
+                        <th class="num">Required</th>
+                        <th class="num">Actual deduction</th>
+                        <th class="num">Excess</th>
+                        <th>Remarks</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach ($excessDeductions as $excessDeduction)
+                        <tr class="excess-row" data-excess-record="1">
+                            <td>{{ $excessDeduction->deduction_month->format('F Y') }}</td>
+                            <td>{{ $benefitPeriod->from_date->format('M Y') }} &ndash; {{ $benefitPeriod->to_date->format('M Y') }}</td>
+                            <td class="num amount">&#8369;{{ number_format($excessDeduction->required_amount, 2) }}</td>
+                            <td class="num amount">&#8369;{{ number_format($excessDeduction->actual_deduction, 2) }}</td>
+                            <td class="num amount"><strong>&#8369;{{ number_format($excessDeduction->excess_amount, 2) }}</strong></td>
+                            <td>{{ $excessDeduction->remarks ?: '—' }}</td>
+                        </tr>
+                    @endforeach
+                </tbody>
+            </table>
+        </div>
+    @endif
 
     {{-- Send receipt by email. The recipient is always the email saved on the member's record (read server-side); this modal only shows it. --}}
     @if (auth()->user()->isAdmin())

@@ -58,6 +58,15 @@ class BenefitPeriod extends Model
     }
 
     /**
+     * Excess deductions recorded for this period — tracking only, never
+     * part of the GHP usage / available calculation (see ExcessDeduction).
+     */
+    public function excessDeductions(): HasMany
+    {
+        return $this->hasMany(ExcessDeduction::class);
+    }
+
+    /**
      * logOnlyDirty() + dontSubmitEmptyLogs() means this only creates a log
      * entry when a value genuinely changes — a no-op recompute (e.g. the
      * daily auto-generation job re-touching a period where nothing actually

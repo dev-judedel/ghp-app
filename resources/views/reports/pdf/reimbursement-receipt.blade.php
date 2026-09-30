@@ -12,13 +12,25 @@
         table.infotable td { padding: 3px 6px; font-size: 10px; vertical-align: top; }
         table.infotable td.label { color: #5B6B65; width: 100px; }
         table.data { width: 100%; border-collapse: collapse; }
-        table.data th { background: #0F5C50; color: #ffffff; text-align: left; padding: 6px 8px; font-size: 9px; text-transform: uppercase; letter-spacing: 0.03em; }
-        table.data td { padding: 5px 8px; border-bottom: 1px solid #DCE3DF; font-size: 9.5px; }
+        table.data th { background: #0F5C50; color: #ffffff; text-align: left; padding: 6px 5px; font-size: 8px; text-transform: uppercase; letter-spacing: 0.02em; }
+        table.data td { padding: 5px 5px; border-bottom: 1px solid #DCE3DF; font-size: 8.8px; }
         table.data tr:nth-child(even) td { background: #F2F4F2; }
         .num { text-align: right; font-family: 'DejaVu Sans Mono', monospace; }
         .total-row td { border-top: 2px solid #0F5C50; font-weight: bold; background: #E4EFEC; }
         .voided td { color: #A6402C; text-decoration: line-through; }
+        /* Excess GHP: red on screen AND in print (fixed hex, no reliance on theme variables). */
+        tr.excess td { color: #C62828; font-weight: bold; }
+        .excess-box { margin-top: 16px; padding: 10px 14px; border: 1px solid #C62828; background: #FDECEA; border-radius: 4px; color: #C62828; }
+        .excess-title { font-size: 11px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 6px; color: #C62828; }
+        table.excess-table { width: 100%; border-collapse: collapse; margin-bottom: 6px; }
+        table.excess-table th { text-align: left; padding: 4px 6px; font-size: 9px; text-transform: uppercase; color: #C62828; border-bottom: 1px solid #C62828; }
+        table.excess-table td { padding: 4px 6px; font-size: 9.5px; color: #C62828; }
+        .excess-total { font-size: 12px; font-weight: bold; color: #C62828; }
+        .excess-fineprint { margin-top: 4px; font-size: 8.5px; color: #C62828; }
         .summary { margin-top: 16px; padding: 10px 14px; background: #E4EFEC; border-radius: 4px; font-size: 11px; font-weight: bold; color: #0A3F37; }
+        .summary .excess-line { color: #C62828; }
+        .summary .note { font-weight: normal; font-size: 8.5px; color: #5B6B65; }
+        .summary .excess-line.has-excess .note { color: #C62828; }
         .footer { margin-top: 20px; font-size: 8px; color: #8FB3A9; text-align: center; }
         .empty { text-align: center; padding: 30px 10px; color: #5B6B65; font-size: 12px; }
     </style>
@@ -58,24 +70,31 @@
                     <th>OR no.</th>
                     <th>Hospital</th>
                     <th class="num">Amount</th>
+                    <th class="num">Available GHP</th>
+                    <th class="num">Excess Deduction</th>
                     <th>Status</th>
                 </tr>
             </thead>
             <tbody>
                 @foreach ($reimbursements as $reimbursement)
-                    <tr class="{{ $reimbursement->is_voided ? 'voided' : '' }}">
+                    {{-- Red ONLY for an active claim whose automatic excess GHP is above zero. --}}
+                    <tr class="{{ $reimbursement->is_voided ? 'voided' : '' }} {{ $reimbursement->hasExcess() ? 'excess' : '' }}">
                         <td>{{ $member->full_name }}</td>
                         <td>{{ $reimbursement->or_date->format('F Y') }}</td>
                         <td>{{ $reimbursement->or_date->format('M d, Y') }}</td>
                         <td>{{ $reimbursement->or_no ?: '—' }}</td>
                         <td>{{ $reimbursement->hospital_name ?: '—' }}</td>
                         <td class="num">&#8369;{{ number_format($reimbursement->or_amount, 2) }}</td>
+                        <td class="num">{{ $reimbursement->available_ghp !== null ? '₱'.number_format($reimbursement->available_ghp, 2) : '—' }}</td>
+                        <td class="num">&#8369;{{ number_format($reimbursement->excess_amount, 2) }}@if ($reimbursement->hasCoveredExcess())<br><span style="font-size: 7.5px; font-weight: normal;">of &#8369;{{ number_format($reimbursement->original_excess_amount, 2) }}, covered &#8369;{{ number_format($reimbursement->excess_covered_amount, 2) }}</span>@endif</td>
                         <td>{{ $reimbursement->is_voided ? 'Voided' : 'Approved' }}</td>
                     </tr>
                 @endforeach
                 <tr class="total-row">
                     <td colspan="5">Total{{ $voidedCount ? ' ('.$voidedCount.' voided, excluded)' : '' }}</td>
                     <td class="num">₱{{ number_format($total, 2) }}</td>
+                    <td></td>
+                    <td class="num" style="{{ $excessTotal > 0 ? 'color: #C62828;' : '' }}">₱{{ number_format($excessTotal, 2) }}</td>
                     <td></td>
                 </tr>
             </tbody>
@@ -84,6 +103,49 @@
         <div class="summary">
             Total Reimbursement Records: {{ $reimbursements->count() }}<br>
             Total Reimbursement Amount: ₱{{ number_format($total, 2) }}
+            @if (($excessCoveredTotal ?? 0) > 0)
+                <div style="font-weight: normal; font-size: 10px; margin-top: 4px;">
+                    Original Excess GHP: &#8369;{{ number_format($excessOriginalTotal, 2) }}<br>
+                    Excess GHP Covered (by the dependent benefit increase): &#8369;{{ number_format($excessCoveredTotal, 2) }}
+                </div>
+            @endif
+            <div class="excess-line {{ $excessTotal > 0 ? 'has-excess' : '' }}" style="{{ $excessTotal > 0 ? 'color: #C62828;' : '' }}">
+                Excess Deduction{{ ($excessCoveredTotal ?? 0) > 0 ? ' (Remaining Excess GHP)' : '' }}: ₱{{ number_format($excessTotal, 2) }}
+                @if ($excessTotal > 0)
+                    <div class="note">Automatically recorded when a reimbursement is above the Available GHP at filing. Tracking only &mdash; not added to the reimbursement amount and not counted as GHP usage.</div>
+                @endif
+            </div>
+        </div>
+    @endif
+
+    {{-- Older excess deductions that were recorded by hand before excess GHP became automatic (history, read-only). Shown in red only when this period has any. --}}
+    @if (($excessDeductions ?? collect())->isNotEmpty())
+        <div class="excess-box">
+            <div class="excess-title">Previously Recorded Excess Deductions</div>
+            <table class="excess-table">
+                <thead>
+                    <tr>
+                        <th>Deduction month</th>
+                        <th>Coverage period</th>
+                        <th class="num">Required</th>
+                        <th class="num">Actual deduction</th>
+                        <th class="num">Excess</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach ($excessDeductions as $excessDeduction)
+                        <tr>
+                            <td>{{ $excessDeduction->deduction_month->format('F Y') }}</td>
+                            <td>{{ $benefitPeriod->from_date->format('M Y') }} &ndash; {{ $benefitPeriod->to_date->format('M Y') }}</td>
+                            <td class="num">&#8369;{{ number_format($excessDeduction->required_amount, 2) }}</td>
+                            <td class="num">&#8369;{{ number_format($excessDeduction->actual_deduction, 2) }}</td>
+                            <td class="num">&#8369;{{ number_format($excessDeduction->excess_amount, 2) }}</td>
+                        </tr>
+                    @endforeach
+                </tbody>
+            </table>
+            <div class="excess-total">Excess Deduction (historical): &#8369;{{ number_format($historicExcessTotal ?? $excessDeductions->sum('excess_amount'), 2) }}</div>
+            <div class="excess-fineprint">Recorded for tracking only. It is not added to the reimbursement amount and is not counted as GHP usage.</div>
         </div>
     @endif
 

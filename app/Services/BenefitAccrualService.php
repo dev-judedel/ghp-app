@@ -30,16 +30,24 @@ use Carbon\CarbonInterface;
  *     if that prior year was entirely unused (used_amount == 0)
  *   - ghp_amount itself: 3600 base, 4200 if the member has at least one
  *     GHP-eligible dependent (see Dependent::isEligible)
- *   - "Used" is capped at the available fund balance as a defensive
- *     floor only — it should never actually bind in normal operation,
- *     since ReimbursementController now blocks any new reimbursement
- *     whose amount exceeds availableBalanceFor() BEFORE it's ever saved
- *     (see the GHP Reimbursement Rule note there). This cap stays in
- *     place to protect the displayed balance against ever going negative
- *     from data that predates that rule or from a manual BenefitPeriod
- *     correction (see BenefitPeriodController::update()) — it is not the
- *     primary gate anymore. The uncapped total is available via
- *     calculate()['claimed'] if needed.
+ *   - "Used" is capped at the available fund balance. Since the GHP
+ *     Reimbursement Rule change, a reimbursement is NO LONGER blocked for being
+ *     larger than the available balance (only for the member having no
+ *     available balance at all — see ReimbursementController::
+ *     assertHasAvailableBalance()), so this cap is now what keeps a large
+ *     claim from over-drawing the fund: the reimbursement keeps its full OR
+ *     amount, while what counts as GHP used stops at what the fund could
+ *     cover and Available floors at 0, never negative. It also still protects
+ *     the displayed balance against data that predates that rule or a manual
+ *     BenefitPeriod correction (see BenefitPeriodController::update()). The
+ *     uncapped total is available via calculate()['claimed'] if needed.
+ *     Excess deductions (App\Models\ExcessDeduction) are historical tracking
+ *     records only and are deliberately NOT read anywhere in this class.
+ *     A reimbursement's own excess_covered_amount IS read (calculate()): when a
+ *     dependent becomes eligible the fund grows, the growth is applied to the
+ *     claim's outstanding excess (applyFundIncreaseToExcess()), and that covered
+ *     part is reported separately instead of as additional "used". Available is
+ *     computed exactly as before.
  *   - Voided reimbursements (Reimbursement::void()) are excluded from the
  *     "used" sum entirely — they never counted against the fund at all,
  *     as opposed to a capped claim which did count, just partially.
@@ -417,12 +425,24 @@ class BenefitAccrualService
         $cappedUsed = min($used, $fundBalance);
         $available = max(round($fundBalance - $cappedUsed, 2), 0.0);
 
+        // Excess GHP that a dependent-driven increase of the fund has already
+        // covered (see applyFundIncreaseToExcess()). That part of the fund was
+        // set against the claim's excess — it is NOT new GHP usage — so it is
+        // shown separately and taken out of "used". Available is unaffected:
+        // fund - used - covered is the same number as fund - min(claimed, fund).
+        $covered = (float) $member->reimbursements()
+            ->notVoided()
+            ->whereBetween('or_date', [$from, $to])
+            ->sum('excess_covered_amount');
+        $coveredApplied = min($covered, $cappedUsed);
+
         return [
             'ghp_amount' => $ghpAmount,
             'months_accrued' => $monthsAccrued,
             'accrued' => $accrued,
             'carry_forward' => round($carryForward, 2),
-            'used' => round($cappedUsed, 2),
+            'used' => round($cappedUsed - $coveredApplied, 2),
+            'excess_covered' => round($coveredApplied, 2),
             'claimed' => round($used, 2),
             'available' => $available,
             'from' => $from,
@@ -568,7 +588,79 @@ class BenefitAccrualService
             return null;
         }
 
+        // The INCREASE is the actual growth of the fund caused by this change
+        // — the same months rendered, priced at the new GHP amount instead of
+        // the period's stored one (e.g. 3 x 350 - 3 x 300 = 150) — NOT the whole
+        // recalculated balance, and not the ordinary monthly accrual that may
+        // have happened since the period was last refreshed.
+        $after = $this->calculate($member, $asOf);
+        $fundBefore = round(((float) $period->ghp_amount / 12) * $after['months_accrued'], 2) + (float) $after['carry_forward'];
+        $fundAfter = (float) $after['accrued'] + (float) $after['carry_forward'];
+        $increase = round($fundAfter - $fundBefore, 2);
+
+        // Runs only when the amount really changed (guard above), so the same
+        // increase can never be applied twice: the next call finds the amounts
+        // already equal and returns before reaching this point.
+        if ($increase > 0) {
+            $this->applyFundIncreaseToExcess($member, $after['from'], $after['to'], $increase);
+        }
+
         return $this->accrue($member, $asOf);
+    }
+
+    /**
+     * Applies an INCREASE of the benefit fund (a dependent becoming eligible)
+     * toward the outstanding excess GHP of the member's active claims in the
+     * coverage period, oldest claim first (OR date, then id), never more than
+     * the increase itself and never more than each claim's remaining excess.
+     *
+     * The claim keeps its id and its full OR amount; only its excess figures
+     * change: excess_covered_amount grows and excess_amount (the remaining)
+     * shrinks. Voided claims are skipped. Whatever part of the increase is
+     * not needed simply stays in Available GHP. It is NOT usage: calculate()
+     * reports the covered part separately from "used".
+     *
+     * Call inside a transaction (recalculateBenefit() does). Returns the
+     * amount applied.
+     */
+    public function applyFundIncreaseToExcess(Member $member, CarbonInterface $from, CarbonInterface $to, float $increase): float
+    {
+        $left = round($increase, 2);
+        $applied = 0.0;
+
+        if ($left <= 0) {
+            return 0.0;
+        }
+
+        $claims = $member->reimbursements()
+            ->notVoided()
+            ->whereBetween('or_date', [$from, $to])
+            ->where('excess_amount', '>', 0)
+            ->orderBy('or_date')
+            ->orderBy('id')
+            ->lockForUpdate()
+            ->get();
+
+        foreach ($claims as $claim) {
+            if ($left <= 0) {
+                break;
+            }
+
+            $remaining = (float) $claim->excess_amount;
+            $apply = round(min($left, $remaining), 2);
+
+            $claim->update([
+                // Keep the excess as it was first calculated, for older rows that predate the column.
+                'original_excess_amount' => (float) $claim->original_excess_amount > 0 ? $claim->original_excess_amount : $remaining,
+                'excess_covered_amount' => round((float) $claim->excess_covered_amount + $apply, 2),
+                'excess_amount' => round($remaining - $apply, 2),
+            ]);
+
+            $left = round($left - $apply, 2);
+            $applied = round($applied + $apply, 2);
+        }
+
+        return $applied;
     }
 
     /**

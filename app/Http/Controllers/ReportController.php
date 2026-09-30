@@ -157,6 +157,9 @@ class ReportController extends Controller
         $pdf = Pdf::loadView('reports.pdf.reimbursements', [
             'reimbursements' => $reimbursements,
             'total' => $reimbursements->where('is_voided', false)->sum('or_amount'),
+            // Automatic excess GHP of the active claims — shown next to, never
+            // added to, the reimbursement total (tracking only).
+            'excessTotal' => round((float) $reimbursements->where('is_voided', false)->sum('excess_amount'), 2),
             'voidedCount' => $reimbursements->where('is_voided', true)->count(),
             'from' => $request->query('from'),
             'to' => $request->query('to'),
@@ -172,7 +175,7 @@ class ReportController extends Controller
 
         return $this->streamCsv(
             'reimbursement-report-'.$request->query('from').'-to-'.$request->query('to').'.csv',
-            ['OR Date', 'Member Code', 'Member Name', 'Type', 'Division', 'OR No', 'Hospital', 'Amount', 'Voided', 'Voided Reason'],
+            ['OR Date', 'Member Code', 'Member Name', 'Type', 'Division', 'OR No', 'Hospital', 'Amount', 'Available GHP', 'Original Excess', 'Excess Covered', 'Excess Deduction', 'Voided', 'Voided Reason'],
             $reimbursements->map(fn ($r) => [
                 $r->or_date->format('Y-m-d'),
                 $r->member->code,
@@ -182,6 +185,15 @@ class ReportController extends Controller
                 $r->or_no ?? '',
                 $r->hospital_name ?? '',
                 $r->or_amount,
+                // Blank for claims filed before Available GHP was recorded (no figure to show).
+                $r->available_ghp ?? '',
+                // Original excess when filed, how much a dependent-driven increase has
+                // covered since, and (next column) what is still outstanding.
+                (float) $r->original_excess_amount > 0 ? $r->original_excess_amount : $r->excess_amount,
+                $r->excess_covered_amount,
+                // CSV has no colours, so the automatic excess GHP is its own column.
+                // The stored figure is exported as-is (0.00 when there is none).
+                $r->excess_amount,
                 $r->is_voided ? 'Yes' : 'No',
                 $r->voided_reason ?? '',
             ])

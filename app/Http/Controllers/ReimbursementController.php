@@ -17,21 +17,33 @@ class ReimbursementController extends Controller
     public function store(StoreReimbursementRequest $request, Member $member, BenefitAccrualService $accrualService): RedirectResponse
     {
         $orDate = Carbon::parse($request->validated('or_date'));
-        $orAmount = (float) $request->validated('or_amount');
 
-        $reimbursement = DB::transaction(function () use ($request, $member, $accrualService, $orDate, $orAmount) {
+        $reimbursement = DB::transaction(function () use ($request, $member, $accrualService, $orDate) {
             $lockedMember = $this->lockMember($member);
 
-            $this->assertWithinBalance($accrualService, $lockedMember, $orDate, $orAmount);
+            // Positive Available GHP is required (no amount cap); the same
+            // figure is then used to work out the excess GHP for this claim.
+            $available = $this->assertHasAvailableBalance($accrualService, $lockedMember, $orDate);
 
-            return $lockedMember->reimbursements()->create($request->validated());
+            return $lockedMember->reimbursements()->create(
+                $this->withExcess($request->validated(), $available)
+            );
         });
 
         $this->refreshCurrentPeriod($member, $accrualService);
         $this->linkToBenefitPeriod($member, $reimbursement, $accrualService);
 
-        return redirect()->route('members.show', $member)
-            ->with('status', "Reimbursement of ₱".number_format($reimbursement->or_amount, 2)." recorded for {$member->code}.");
+        $message = "Reimbursement of ₱".number_format($reimbursement->or_amount, 2)." recorded for {$member->code}.";
+
+        if ((float) $reimbursement->excess_amount > 0) {
+            $message .= sprintf(
+                ' It is above the available GHP of ₱%s, so an excess of ₱%s was recorded automatically (tracking only — GHP usage is unchanged).',
+                number_format($reimbursement->available_ghp, 2),
+                number_format($reimbursement->excess_amount, 2),
+            );
+        }
+
+        return redirect()->route('members.show', $member)->with('status', $message);
     }
 
     public function update(StoreReimbursementRequest $request, Member $member, Reimbursement $reimbursement, BenefitAccrualService $accrualService): RedirectResponse
@@ -44,31 +56,41 @@ class ReimbursementController extends Controller
         }
 
         $orDate = Carbon::parse($request->validated('or_date'));
-        $orAmount = (float) $request->validated('or_amount');
 
-        DB::transaction(function () use ($request, $member, $reimbursement, $accrualService, $orDate, $orAmount) {
+        DB::transaction(function () use ($request, $member, $reimbursement, $accrualService, $orDate) {
             $lockedMember = $this->lockMember($member);
 
-            // This reimbursement's OWN current amount is still sitting
-            // inside "used" at this point (it hasn't been updated yet) —
-            // add it back before checking, but only when it was already
-            // counted against the SAME coverage period the new or_date
-            // falls into; otherwise it belongs to a different period's
-            // balance entirely and shouldn't be credited against this one.
-            $creditBack = 0.0;
+            // Editing a claim that is already on file doesn't need a fresh
+            // balance: the "positive Available GHP" requirement was met when
+            // it was filed, and it must stay correctable (a typo in the amount
+            // or OR number) even if this very claim used up the balance. It
+            // only counts as a NEW filing — and needs a positive balance —
+            // when the change moves it into a different coverage period.
+            [$oldFrom, $oldTo] = $accrualService->coveragePeriod($member, $reimbursement->or_date);
+            [$newFrom, $newTo] = $accrualService->coveragePeriod($member, $orDate);
 
-            if (! $reimbursement->is_voided) {
-                [$oldFrom, $oldTo] = $accrualService->coveragePeriod($member, $reimbursement->or_date);
-                [$newFrom, $newTo] = $accrualService->coveragePeriod($member, $orDate);
+            $movesToAnotherPeriod = ! ($oldFrom->equalTo($newFrom) && $oldTo->equalTo($newTo));
 
-                if ($oldFrom->equalTo($newFrom) && $oldTo->equalTo($newTo)) {
-                    $creditBack = (float) $reimbursement->or_amount;
-                }
+            // Which Available GHP is this edited claim measured against?
+            //   - Moved into another coverage period: it is a NEW filing there,
+            //     so it needs a positive balance and is measured against that
+            //     period's Available GHP as it is now.
+            //   - Same period, and a figure was recorded when it was filed: keep
+            //     that RECORDED Available GHP untouched and only recalculate the
+            //     excess from the new amount (excess = amount - recorded
+            //     Available GHP, never below 0). The recorded figure is history:
+            //     later claims or balance changes must not rewrite it.
+            //   - Older claim with nothing recorded: derive it once from the
+            //     period's fund minus the OTHER active claims, and record it.
+            if ($movesToAnotherPeriod) {
+                $available = $this->assertHasAvailableBalance($accrualService, $lockedMember, $orDate);
+            } elseif ($reimbursement->available_ghp !== null) {
+                $available = (float) $reimbursement->available_ghp;
+            } else {
+                $available = $this->availableExcludingClaim($accrualService, $lockedMember, $orDate, $reimbursement);
             }
 
-            $this->assertWithinBalance($accrualService, $lockedMember, $orDate, $orAmount, $creditBack);
-
-            $reimbursement->update($request->validated());
+            $reimbursement->update($this->withExcess($request->validated(), $available, $reimbursement));
         });
 
         $this->refreshCurrentPeriod($member, $accrualService);
@@ -113,51 +135,120 @@ class ReimbursementController extends Controller
 
     /**
      * ================================================================
-     * GHP Reimbursement Rule: Requested Amount <= Available GHP Amount.
+     * GHP Reimbursement Rule: the member must HAVE an Available GHP balance.
      * ================================================================
      *
-     * The FINAL, authoritative check — store()/update() above call this
-     * from inside a DB::transaction() with the member row already locked
-     * (see lockMember()), so it always evaluates against a fresh,
-     * consistent balance no other in-flight request can be mid-write on.
-     * If two reimbursements for the same member are submitted at nearly
-     * the same instant, the second one's transaction blocks on the lock
-     * until the first commits, then re-reads the now-updated balance —
-     * so it's impossible for both to be validated against the same
-     * "before" balance and jointly drive it negative.
+     * The balance is a PREREQUISITE for filing, not a ceiling on the amount:
+     *   - Available GHP > 0  -> the reimbursement can be filed, whatever its
+     *     amount (₱1,000 available / ₱5,000 claim is allowed);
+     *   - Available GHP <= 0 (none left, or never accrued) -> not allowed.
+     * There is no maximum reimbursement amount. The amount only has to be a
+     * valid positive number (StoreReimbursementRequest).
      *
-     * $creditBack lets update() add the reimbursement's own current
-     * amount back onto the available balance before comparing, since
-     * that amount is still counted in "used" until this save replaces it
-     * (see update() above for when it applies).
+     * This changes nothing in the GHP calculation. BenefitAccrualService::
+     * calculate() still counts as "used" only what the fund can cover (the
+     * full OR amount stays on the reimbursement record), so the GHP amount,
+     * monthly GHP, required amount and the accrual rules are untouched.
      *
-     * Throwing ValidationException here (rather than only in the
-     * FormRequest, which runs before the lock is held and so can't be the
-     * real guarantee) still redirects back with the error in the normal
-     * $errors bag under 'or_amount' — the reimbursement modal in
-     * members/show.blade.php already displays that.
+     * The FINAL, authoritative check — store()/update() call this from inside
+     * a DB::transaction() with the member row already locked (see
+     * lockMember()), so two near-simultaneous filings can't both be validated
+     * against the same "before" balance. The page's JavaScript makes the same
+     * check for immediate feedback but is never trusted on its own.
+     *
+     * Throws a ValidationException under 'or_amount', which the File
+     * reimbursement modal in members/show.blade.php already displays.
+     *
+     * Returns the Available GHP that was checked, so the caller can work out
+     * the excess GHP from the very same figure (see withExcess()).
      */
-    private function assertWithinBalance(BenefitAccrualService $accrualService, Member $member, Carbon $orDate, float $orAmount, float $creditBack = 0.0): void
+    private function assertHasAvailableBalance(BenefitAccrualService $accrualService, Member $member, Carbon $orDate): float
     {
         $member->load('dependents', 'benefitPeriods');
 
-        $available = $accrualService->availableBalanceFor($member, $orDate)['available'] + $creditBack;
+        $available = $accrualService->availableBalanceFor($member, $orDate)['available'];
 
-        if ($orAmount > $available) {
+        if ($available <= 0) {
             throw ValidationException::withMessages([
                 'or_amount' => sprintf(
-                    'Insufficient GHP balance. Available GHP Amount: ₱%s. Requested Amount: ₱%s. The reimbursement amount cannot exceed the remaining GHP balance.',
-                    number_format($available, 2),
-                    number_format($orAmount, 2)
+                    "Can't file this reimbursement: %s has no available GHP balance for the coverage period of the OR date (Available GHP: ₱%s). A positive available balance is required to file a reimbursement — the amount itself is not limited by it.",
+                    $member->code,
+                    number_format(max($available, 0), 2)
                 ),
             ]);
         }
+
+        return (float) $available;
+    }
+
+    /**
+     * ================================================================
+     * Automatic EXCESS GHP.
+     * ================================================================
+     *
+     *     excess GHP = reimbursement amount - Available GHP   (only when > 0)
+     *
+     * Calculated here on the server from the member's Available GHP for the
+     * OR date's coverage period at the time of filing; the browser never
+     * supplies it. The claim is always filed and kept at its full OR amount.
+     * available_ghp and excess_amount are stored on the reimbursement itself
+     * (one column each, so a claim can never have two excess records) purely
+     * for tracking and reporting.
+     *
+     * Nothing here touches GHP usage: filing never changes what counts as used
+     * (BenefitAccrualService only reads excess_covered_amount, which is set
+     * later by a dependent-driven fund increase — see applyFundIncreaseToExcess()
+     * — and even then keeps it out of "used"). The period is refreshed by the
+     * same calculation as before (used = what the fund can cover, Available
+     * floors at 0).
+     */
+    private function withExcess(array $data, float $available, ?Reimbursement $existing = null): array
+    {
+        $available = max(round($available, 2), 0.0);
+        $amount = round((float) $data['or_amount'], 2);
+        $original = max(round($amount - $available, 2), 0.0);
+
+        // On an EDIT, whatever a dependent-driven increase has already covered
+        // is kept (never re-applied, never lost) — only capped at the new
+        // original excess if the amount was lowered. On a new claim: 0.
+        $covered = $existing ? min(round((float) $existing->excess_covered_amount, 2), $original) : 0.0;
+
+        $data['available_ghp'] = $available;
+        // excess_amount is the REMAINING (still outstanding) excess: original - covered.
+        $data['original_excess_amount'] = $original;
+        $data['excess_covered_amount'] = $covered;
+        $data['excess_amount'] = round($original - $covered, 2);
+
+        return $data;
+    }
+
+    /**
+     * Available GHP for the period containing $orDate as seen by ONE existing
+     * claim: the period's fund (accrued + carry-forward) minus every OTHER
+     * active claim in that period. Only used for OLDER claims that were filed
+     * before Available GHP was recorded (see update()); claims with a
+     * recorded figure keep it.
+     */
+    private function availableExcludingClaim(BenefitAccrualService $accrualService, Member $member, Carbon $orDate, Reimbursement $claim): float
+    {
+        $member->load('dependents', 'benefitPeriods');
+
+        $balance = $accrualService->availableBalanceFor($member, $orDate);
+        $fund = (float) $balance['accrued'] + (float) $balance['carry_forward'];
+
+        $others = (float) $member->reimbursements()
+            ->notVoided()
+            ->whereKeyNot($claim->getKey())
+            ->whereBetween('or_date', [$balance['from'], $balance['to']])
+            ->sum('or_amount');
+
+        return max(round($fund - $others, 2), 0.0);
     }
 
     /**
      * Locks the member row for the duration of the enclosing transaction —
-     * see assertWithinBalance() above for why. Must be called from inside
-     * DB::transaction(); the lock releases on commit/rollback.
+     * see assertHasAvailableBalance() above for why. Must be called from
+     * inside DB::transaction(); the lock releases on commit/rollback.
      */
     private function lockMember(Member $member): Member
     {

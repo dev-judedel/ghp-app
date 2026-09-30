@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Member;
 use App\Models\Reimbursement;
 use App\Models\User;
+use App\Services\BenefitAccrualService;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -16,6 +17,10 @@ use Tests\TestCase;
  * This controller touches financial data directly (GHP fund balances) and
  * had no test coverage before this file — flagged as the riskiest gap in
  * task.md.
+ *
+ * Filing rule (Reimbursement Amount Limits change): there is NO maximum
+ * reimbursement amount. The member only needs a POSITIVE Available GHP
+ * balance to file; the amount itself is not compared with that balance.
  */
 class ReimbursementManagementTest extends TestCase
 {
@@ -114,6 +119,21 @@ class ReimbursementManagementTest extends TestCase
         ])->assertSessionHasErrors('or_amount');
     }
 
+    public function test_or_amount_must_be_a_valid_number_and_never_negative(): void
+    {
+        $member = $this->activeMember();
+        $admin = $this->admin();
+
+        foreach (['abc', -50, '12.345'] as $bad) {
+            $this->actingAs($admin)->post(route('members.reimbursements.store', $member), [
+                'or_date' => '2026-05-10',
+                'or_amount' => $bad,
+            ])->assertSessionHasErrors('or_amount');
+        }
+
+        $this->assertDatabaseMissing('reimbursements', ['member_id' => $member->id]);
+    }
+
     public function test_filing_a_reimbursement_refreshes_the_current_benefit_period_balance(): void
     {
         $member = $this->activeMember(); // full cycle, 3600 available before any claim
@@ -145,28 +165,28 @@ class ReimbursementManagementTest extends TestCase
         $this->assertSame($period->id, $reimbursement->benefit_period_id);
     }
 
-    /**
-     * Business rule as of the GHP Reimbursement Rule change: a claim that
-     * exceeds the available balance is rejected outright and never saved
-     * — this replaces the previous "record in full, cap what counts
-     * against the fund" behavior (see BenefitAccrualService's class-level
-     * doc comment and ReimbursementController::assertWithinBalance()).
-     */
-    public function test_a_claim_exceeding_the_available_balance_is_rejected_and_not_saved(): void
+    // ---- The filing rule: positive Available GHP required, NO amount limit ----
+
+    /** Test 1 / Scenario 1–2: the amount may be far above the available balance. */
+    public function test_a_claim_far_above_the_available_balance_is_allowed_and_saved_in_full(): void
     {
         $member = $this->activeMember(); // 3600 available
-        app(\App\Services\BenefitAccrualService::class)->accrue($member);
+        app(BenefitAccrualService::class)->accrue($member);
 
         $this->actingAs($this->admin())->post(route('members.reimbursements.store', $member), [
             'or_date' => '2026-05-10',
-            'or_amount' => 5000, // exceeds the 3600 available
-        ])->assertSessionHasErrors('or_amount');
+            'or_amount' => 10000, // far above the 3600 available
+        ])->assertRedirect(route('members.show', $member))
+            ->assertSessionHasNoErrors();
 
-        $this->assertDatabaseMissing('reimbursements', ['member_id' => $member->id]);
+        // Recorded at its FULL amount...
+        $this->assertDatabaseHas('reimbursements', ['member_id' => $member->id, 'or_amount' => 10000]);
 
+        // ...while the GHP figures follow the existing rule: what counts as
+        // used stops at what the fund can cover, and available floors at 0.
         $period = $member->benefitPeriods()->first();
-        $this->assertSame(0.0, (float) $period->ghp_used);
-        $this->assertSame(3600.0, (float) $period->ghp_available);
+        $this->assertSame(3600.0, (float) $period->ghp_used);
+        $this->assertSame(0.0, (float) $period->ghp_available);
     }
 
     public function test_a_claim_exactly_equal_to_the_available_balance_is_allowed(): void
@@ -186,46 +206,71 @@ class ReimbursementManagementTest extends TestCase
         $this->assertSame(0.0, (float) $period->ghp_available);
     }
 
-    public function test_a_second_claim_that_would_exceed_the_remaining_balance_is_rejected(): void
+    /** Test 2 / Scenario 3: no Available GHP -> filing is not allowed. */
+    public function test_a_member_with_no_available_balance_cannot_file(): void
     {
-        $member = $this->activeMember(); // 3600 available
+        // First deduction is AFTER this cycle ends -> 0 months accrued -> Available GHP = 0.
+        $member = $this->activeMember(['deduction_start_date' => '2027-04-01']);
 
         $this->actingAs($this->admin())->post(route('members.reimbursements.store', $member), [
             'or_date' => '2026-05-10',
-            'or_amount' => 3000,
-        ]);
-
-        // 600 left — 601 should be rejected, 600 should be allowed.
-        $this->actingAs($this->admin())->post(route('members.reimbursements.store', $member), [
-            'or_date' => '2026-06-10',
-            'or_amount' => 601,
+            'or_amount' => 5000,
         ])->assertSessionHasErrors('or_amount');
 
-        $this->assertDatabaseMissing('reimbursements', ['member_id' => $member->id, 'or_amount' => 601]);
-
-        $period = $member->benefitPeriods()->first();
-        $this->assertSame(3000.0, (float) $period->ghp_used);
-        $this->assertSame(600.0, (float) $period->ghp_available);
+        $this->assertDatabaseMissing('reimbursements', ['member_id' => $member->id]);
     }
 
-    public function test_editing_a_reimbursement_to_exceed_the_balance_is_rejected(): void
+    public function test_once_the_balance_is_used_up_no_further_claim_can_be_filed(): void
     {
         $member = $this->activeMember(); // 3600 available
-        $reimbursement = $member->reimbursements()->create([
-            'or_date' => '2026-05-10',
-            'or_amount' => 500,
-        ]);
-        app(\App\Services\BenefitAccrualService::class)->accrue($member);
+        $admin = $this->admin();
 
-        // 3100 remaining after the existing 500 claim — raising it to 4000
-        // would need 3500 more than what's left, so it must be rejected and
-        // the original amount must stay untouched.
-        $this->actingAs($this->admin())->put(route('members.reimbursements.update', [$member, $reimbursement]), [
+        $this->actingAs($admin)->post(route('members.reimbursements.store', $member), [
             'or_date' => '2026-05-10',
-            'or_amount' => 4000,
+            'or_amount' => 3000,
+        ])->assertSessionHasNoErrors();
+
+        // 600 is still available, so a 601 (or 6,000) claim is allowed —
+        // the balance is a prerequisite, not a ceiling on the amount.
+        $this->actingAs($admin)->post(route('members.reimbursements.store', $member), [
+            'or_date' => '2026-06-10',
+            'or_amount' => 6000,
+        ])->assertSessionHasNoErrors();
+
+        $period = $member->benefitPeriods()->first();
+        $this->assertSame(3600.0, (float) $period->ghp_used);
+        $this->assertSame(0.0, (float) $period->ghp_available);
+
+        // Now nothing is left: the next claim (even a small one) is rejected.
+        $this->actingAs($admin)->post(route('members.reimbursements.store', $member), [
+            'or_date' => '2026-07-10',
+            'or_amount' => 100,
         ])->assertSessionHasErrors('or_amount');
 
-        $this->assertSame(500.0, (float) $reimbursement->fresh()->or_amount);
+        $this->assertDatabaseMissing('reimbursements', ['member_id' => $member->id, 'or_amount' => 100]);
+        $this->assertSame(2, Reimbursement::where('member_id', $member->id)->count());
+    }
+
+    /** Test 7: a reimbursement never changes the original GHP requirements. */
+    public function test_a_large_reimbursement_does_not_change_the_original_ghp_requirements(): void
+    {
+        $member = $this->activeMember();
+        $accrual = app(BenefitAccrualService::class);
+        $before = $accrual->requiredAmountForCycle($member->fresh(['dependents']));
+
+        $this->actingAs($this->admin())->post(route('members.reimbursements.store', $member), [
+            'or_date' => '2026-05-10',
+            'or_amount' => 5000,
+        ]);
+
+        $after = $accrual->requiredAmountForCycle($member->fresh(['dependents']));
+
+        $this->assertSame(3600.0, (float) $member->fresh()->ghp_amount);
+        $this->assertFalse($member->fresh()->ghp_amount_is_manual);
+        $this->assertSame($before['ghp_amount'], $after['ghp_amount']);
+        $this->assertSame(300.0, $after['monthly_rate']);
+        $this->assertSame($before['required_amount'], $after['required_amount']);
+        $this->assertSame($before['applicable_months'], $after['applicable_months']);
     }
 
     // ---- Editing (update) ----
@@ -250,6 +295,44 @@ class ReimbursementManagementTest extends TestCase
         $this->assertSame(700.0, (float) $reimbursement->or_amount);
     }
 
+    public function test_editing_a_claim_to_a_larger_amount_is_allowed_even_when_it_used_up_the_balance(): void
+    {
+        $member = $this->activeMember(); // 3600 available
+        $reimbursement = $member->reimbursements()->create([
+            'or_date' => '2026-05-10',
+            'or_amount' => 3600, // uses the whole balance
+        ]);
+        app(BenefitAccrualService::class)->accrue($member);
+
+        // A correction (e.g. the receipt was really 4,000) must stay possible.
+        $this->actingAs($this->admin())->put(route('members.reimbursements.update', [$member, $reimbursement]), [
+            'or_date' => '2026-05-10',
+            'or_amount' => 4000,
+        ])->assertRedirect(route('members.show', $member))
+            ->assertSessionHasNoErrors();
+
+        $this->assertSame(4000.0, (float) $reimbursement->fresh()->or_amount);
+        $this->assertSame(3600.0, (float) $member->benefitPeriods()->first()->ghp_used);
+    }
+
+    public function test_moving_a_claim_into_a_period_with_no_available_balance_is_rejected(): void
+    {
+        $member = $this->activeMember(); // deductions started Apr 2026; the previous cycle has none
+        $reimbursement = $member->reimbursements()->create([
+            'or_date' => '2026-05-10',
+            'or_amount' => 500,
+        ]);
+        app(BenefitAccrualService::class)->accrue($member);
+
+        // Jan 2026 belongs to the previous cycle (Apr 2025–Mar 2026): 0 available there.
+        $this->actingAs($this->admin())->put(route('members.reimbursements.update', [$member, $reimbursement]), [
+            'or_date' => '2026-01-10',
+            'or_amount' => 500,
+        ])->assertSessionHasErrors('or_amount');
+
+        $this->assertSame('2026-05-10', $reimbursement->fresh()->or_date->toDateString());
+    }
+
     public function test_updating_a_reimbursement_refreshes_the_benefit_period_balance(): void
     {
         $member = $this->activeMember();
@@ -257,7 +340,7 @@ class ReimbursementManagementTest extends TestCase
             'or_date' => '2026-05-10',
             'or_amount' => 500,
         ]);
-        app(\App\Services\BenefitAccrualService::class)->accrue($member);
+        app(BenefitAccrualService::class)->accrue($member);
 
         $this->actingAs($this->admin())->put(route('members.reimbursements.update', [$member, $reimbursement]), [
             'or_date' => '2026-05-10',
@@ -341,7 +424,7 @@ class ReimbursementManagementTest extends TestCase
             'or_date' => '2026-05-10',
             'or_amount' => 500,
         ]);
-        app(\App\Services\BenefitAccrualService::class)->accrue($member);
+        app(BenefitAccrualService::class)->accrue($member);
 
         $this->actingAs($this->admin())->post(route('members.reimbursements.void', [$member, $reimbursement]), [
             'reason' => 'Filed in error',
@@ -397,7 +480,7 @@ class ReimbursementManagementTest extends TestCase
             'or_amount' => 500,
         ]);
         $reimbursement->void('filed in error', $this->admin());
-        app(\App\Services\BenefitAccrualService::class)->accrue($member);
+        app(BenefitAccrualService::class)->accrue($member);
 
         $this->actingAs($this->admin())->post(route('members.reimbursements.unvoid', [$member, $reimbursement]));
 

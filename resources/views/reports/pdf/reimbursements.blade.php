@@ -15,6 +15,8 @@
         .total-row td { border-top: 2px solid #0F5C50; font-weight: bold; background: #E4EFEC; }
         .voided td { color: #A6402C; text-decoration: line-through; }
         .voided-label { text-decoration: none; font-size: 8px; text-transform: uppercase; font-weight: bold; }
+        /* Excess GHP: red on screen AND in print (fixed hex, no theme variables). */
+        tr.excess td { color: #C62828; font-weight: bold; }
         .footer { margin-top: 16px; font-size: 8px; color: #8FB3A9; }
         .report-title { text-align: center; font-size: 15px; font-weight: bold; color: #0A3F37; text-transform: uppercase; letter-spacing: 0.04em; margin: 0 0 2px; }
         hr.divider { border: none; border-top: 2px solid #0F5C50; margin: 0 0 14px; }
@@ -43,11 +45,14 @@
                 <th>OR no.</th>
                 <th>Hospital</th>
                 <th class="num">Amount</th>
+                <th class="num">Available GHP</th>
+                <th class="num">Excess Deduction</th>
             </tr>
         </thead>
         <tbody>
             @foreach ($reimbursements as $reimbursement)
-                <tr class="{{ $reimbursement->is_voided ? 'voided' : '' }}">
+                {{-- Red ONLY for an active claim whose automatic excess GHP is above zero. --}}
+                <tr class="{{ $reimbursement->is_voided ? 'voided' : '' }} {{ $reimbursement->hasExcess() ? 'excess' : '' }}">
                     <td>{{ $reimbursement->or_date->format('M d, Y') }}</td>
                     <td>{{ $reimbursement->member->code }}</td>
                     <td>{{ $reimbursement->member->full_name }}</td>
@@ -56,15 +61,19 @@
                     <td>{{ $reimbursement->or_no ?: '—' }} @if($reimbursement->is_voided)<span class="voided-label"> VOID</span>@endif</td>
                     <td>{{ $reimbursement->hospital_name ?: '—' }}</td>
                     <td class="num">&#8369;{{ number_format($reimbursement->or_amount, 2) }}</td>
+                    <td class="num">{{ $reimbursement->available_ghp !== null ? '₱'.number_format($reimbursement->available_ghp, 2) : '—' }}</td>
+                    <td class="num">&#8369;{{ number_format($reimbursement->excess_amount, 2) }}@if ($reimbursement->hasCoveredExcess())<br><span style="font-size: 8px; font-weight: normal;">of &#8369;{{ number_format($reimbursement->original_excess_amount, 2) }}, covered &#8369;{{ number_format($reimbursement->excess_covered_amount, 2) }}</span>@endif</td>
                 </tr>
             @endforeach
             <tr class="total-row">
-                <td colspan="7">Total</td>
+                <td colspan="7">Total{{ $voidedCount ? ' ('.$voidedCount.' voided, excluded)' : '' }}</td>
                 <td class="num">₱{{ number_format($total, 2) }}</td>
+                <td></td>
+                <td class="num" style="{{ $excessTotal > 0 ? 'color: #C62828;' : '' }}">₱{{ number_format($excessTotal, 2) }}</td>
             </tr>
         </tbody>
     </table>
 
-    <div class="footer">Group Hospitalization Plan &mdash; internal system. Generated {{ $generatedAt->format('Y-m-d H:i') }}.</div>
+    <div class="footer">Excess Deduction = reimbursement amount &minus; the Available GHP when it was filed; recorded for tracking only (not added to the total and not GHP usage). Group Hospitalization Plan &mdash; internal system. Generated {{ $generatedAt->format('Y-m-d H:i') }}.</div>
 </body>
 </html>

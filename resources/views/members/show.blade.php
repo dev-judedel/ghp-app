@@ -15,6 +15,8 @@
 @endphp
 
 @section('content')
+    @include('members._excess-styles')
+
     <div style="margin-bottom: 16px;">
         <a href="{{ route('members.index') }}">&larr; Back to members</a>
     </div>
@@ -295,6 +297,7 @@
                 <thead>
                     <tr>
                         <th>OR date</th><th>OR no.</th><th>Hospital</th><th class="num">Amount</th>
+                        <th class="num">Available GHP</th><th class="num">Excess Deduction</th><th>Status</th>
                         @if (auth()->user()->isAdmin())
                             <th></th>
                         @endif
@@ -302,16 +305,28 @@
                 </thead>
                 <tbody>
                     @foreach ($member->reimbursements as $reimbursement)
-                        <tr style="{{ $reimbursement->is_voided ? 'opacity: 0.55;' : '' }}">
+                        {{-- Red ONLY for an active claim whose automatic excess GHP is above zero (tracking only — not GHP usage). --}}
+                        <tr @if ($reimbursement->hasExcess()) data-excess="1" class="excess-row" @endif style="{{ $reimbursement->is_voided ? 'opacity: 0.55;' : '' }}">
                             <td>{{ $reimbursement->or_date->format('M d, Y') }}</td>
-                            <td class="code">
-                                {{ $reimbursement->or_no ?: '—' }}
-                                @if ($reimbursement->is_voided)
-                                    <span class="badge badge-warn" style="margin-left: 6px;">Voided</span>
-                                @endif
-                            </td>
+                            <td class="code">{{ $reimbursement->or_no ?: '—' }}</td>
                             <td>{{ $reimbursement->hospital_name ?: '—' }}</td>
                             <td class="num amount" style="{{ $reimbursement->is_voided ? 'text-decoration: line-through;' : '' }}">&#8369;{{ number_format($reimbursement->or_amount, 2) }}</td>
+                            <td class="num amount">{{ $reimbursement->available_ghp !== null ? '₱'.number_format($reimbursement->available_ghp, 2) : '—' }}</td>
+                            <td class="num amount">
+                                @if ($reimbursement->hasExcess())
+                                    <span class="excess-badge">&#8369;{{ number_format($reimbursement->excess_amount, 2) }}</span>
+                                @else
+                                    &#8369;{{ number_format($reimbursement->excess_amount, 2) }}
+                                @endif
+                                @if ($reimbursement->hasCoveredExcess())
+                                    <div style="font-size: 11px; font-weight: normal; color: var(--ink-muted);">
+                                        remaining &middot; original &#8369;{{ number_format($reimbursement->original_excess_amount, 2) }}, covered &#8369;{{ number_format($reimbursement->excess_covered_amount, 2) }}
+                                    </div>
+                                @endif
+                            </td>
+                            <td>
+                                <span class="badge {{ $reimbursement->is_voided ? 'badge-warn' : 'badge-ok' }}">{{ $reimbursement->is_voided ? 'Voided' : 'Active' }}</span>
+                            </td>
                             @if (auth()->user()->isAdmin())
                                 <td style="white-space: nowrap;">
                                     @if ($reimbursement->is_voided)
@@ -589,7 +604,7 @@
                     <div class="field">
                         <label for="or_amount">Amount</label>
                         <input type="number" id="or_amount" name="or_amount" value="{{ old('or_amount') }}" step="0.01" min="0.01" required oninput="updateReimbursementPreview()">
-                        <p class="hint">Cannot exceed the available GHP amount shown above — the balance shown is for the coverage period matching the OR date above (usually the current one).</p>
+                        <p class="hint">Based on the actual expense and documents. The amount isn't limited by the available GHP shown above — the member only needs a positive available balance (for the coverage period matching the OR date) to file.</p>
                     </div>
 
                     <div class="field">
@@ -657,6 +672,7 @@
             const reimbursementUpdateUrlBase = '{{ url('members/'.$member->id.'/reimbursements') }}';
             const reimbursementAvailableBase = {{ (float) ($currentBenefitPeriod->ghp_available ?? 0) }};
             let reimbursementCreditBack = 0;
+            let reimbursementIsEdit = false;
 
             function formatPeso(value) {
                 return '\u20b1' + value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -664,7 +680,7 @@
 
             // Client-side preview only, for immediate feedback — the server
             // re-checks this exact rule under a row lock before saving
-            // anything (see ReimbursementController::assertWithinBalance()),
+            // anything (see ReimbursementController::assertHasAvailableBalance()),
             // since this can be bypassed and is never trusted on its own.
             function updateReimbursementPreview() {
                 const amount = parseFloat(document.getElementById('or_amount').value) || 0;
@@ -677,13 +693,22 @@
 
                 const warning = document.getElementById('reimbursementBalanceWarning');
                 const submitBtn = document.getElementById('reimbursementFormSubmit');
-                const insufficient = amount > available;
 
-                warning.style.display = insufficient ? 'block' : 'none';
-                warning.textContent = insufficient
-                    ? 'Insufficient GHP balance. Maximum reimbursement available: ' + formatPeso(available)
-                    : '';
-                submitBtn.disabled = insufficient || amount <= 0;
+                // The ONLY balance rule: filing a NEW reimbursement needs a positive
+                // Available GHP. The amount is not limited by it, so a bigger claim
+                // is just a note, never a block. (Correcting an existing claim isn't
+                // blocked either.) The server enforces the same rule.
+                const noBalance = ! reimbursementIsEdit && available <= 0;
+                const overBalance = available > 0 && amount > available;
+
+                warning.style.display = (noBalance || overBalance) ? 'block' : 'none';
+                warning.style.color = noBalance ? '' : 'var(--ink-muted)';
+                warning.textContent = noBalance
+                    ? "No available GHP balance \u2014 a reimbursement can't be filed until the member has a positive available balance."
+                    : (overBalance
+                        ? 'This amount is above the available GHP balance. It is filed in full; an excess of ' + formatPeso(amount - available) + ' is recorded automatically for tracking (GHP usage is unchanged).'
+                        : '');
+                submitBtn.disabled = noBalance || amount <= 0;
 
                 return ! submitBtn.disabled;
             }
@@ -700,6 +725,7 @@
                 document.getElementById('description').value = '';
                 document.getElementById('remarks').value = '';
                 reimbursementCreditBack = 0;
+                reimbursementIsEdit = false;
                 updateReimbursementPreview();
                 fileReimbursementModal.showModal();
             }
@@ -723,6 +749,7 @@
                 // the OR date stays in the current period); the server's own
                 // check in update() applies this precisely, per period.
                 reimbursementCreditBack = parseFloat(orAmount) || 0;
+                reimbursementIsEdit = true;
                 updateReimbursementPreview();
                 fileReimbursementModal.showModal();
             }

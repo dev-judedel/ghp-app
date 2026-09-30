@@ -57,6 +57,14 @@ class BenefitPeriodController extends Controller
             'reimbursements' => $reimbursements,
             'total' => $reimbursements->where('is_voided', false)->sum('or_amount'),
             'voidedCount' => $reimbursements->where('is_voided', true)->count(),
+            // Automatic excess GHP (reimbursements.excess_amount), active claims
+            // only. Shown next to the reimbursements but kept out of every GHP
+            // figure: $total above is reimbursements only.
+            'excessTotal' => $this->excessTotalOf($reimbursements),
+            'excessCoveredTotal' => $this->excessCoveredTotalOf($reimbursements),
+            'excessOriginalTotal' => round($this->excessTotalOf($reimbursements) + $this->excessCoveredTotalOf($reimbursements), 2),
+            // Older, manually recorded excess deductions — read-only history.
+            'excessDeductions' => $this->excessDeductionsFor($benefitPeriod),
         ]);
     }
 
@@ -115,7 +123,7 @@ class BenefitPeriodController extends Controller
             return $back->with('status', "Can't send — the email on file for {$member->code} ({$email}) isn't a valid, reachable address. Please correct it under Edit member.");
         }
 
-        [$pdf, $filename, $reimbursements, $total] = $this->buildReceiptPdf($request, $member, $benefitPeriod);
+        [$pdf, $filename, $reimbursements, $total, $excessTotal] = $this->buildReceiptPdf($request, $member, $benefitPeriod);
 
         if ($reimbursements->isEmpty()) {
             return $back->with('status', 'Nothing to send — there are no reimbursement records in this coverage period.');
@@ -132,6 +140,8 @@ class BenefitPeriodController extends Controller
                 total: (float) $total,
                 note: $request->validated('note'),
                 sentBy: $request->user()->name,
+                excessTotal: (float) $excessTotal,
+                reimbursements: $reimbursements,
             ));
         } catch (TransportExceptionInterface $e) {
             Log::warning('Reimbursement receipt email failed', ['member_id' => $member->id, 'to' => $email, 'error' => $e->getMessage()]);
@@ -174,7 +184,7 @@ class BenefitPeriodController extends Controller
      * Shared by Print, Download and Send so all three are the exact same
      * document.
      *
-     * @return array{0: \Barryvdh\DomPDF\PDF, 1: string, 2: \Illuminate\Support\Collection, 3: float}
+     * @return array{0: \Barryvdh\DomPDF\PDF, 1: string, 2: \Illuminate\Support\Collection, 3: float, 4: float}
      */
     private function buildReceiptPdf(Request $request, Member $member, BenefitPeriod $benefitPeriod): array
     {
@@ -184,12 +194,24 @@ class BenefitPeriodController extends Controller
 
         $total = $reimbursements->where('is_voided', false)->sum('or_amount');
 
+        // Automatic excess GHP: shown per record and as a total, in red, on the
+        // receipt. Tracking only — never added to $total or to GHP usage.
+        $excessTotal = $this->excessTotalOf($reimbursements);
+
+        $historicExcess = $this->excessDeductionsFor($benefitPeriod);
+
         $pdf = Pdf::loadView('reports.pdf.reimbursement-receipt', [
             'member' => $member,
             'benefitPeriod' => $benefitPeriod,
             'reimbursements' => $reimbursements,
             'total' => $total,
             'voidedCount' => $reimbursements->where('is_voided', true)->count(),
+            'excessTotal' => $excessTotal,
+            // What dependent-driven fund increases have already covered (original = remaining + covered).
+            'excessCoveredTotal' => $this->excessCoveredTotalOf($reimbursements),
+            'excessOriginalTotal' => round($excessTotal + $this->excessCoveredTotalOf($reimbursements), 2),
+            'excessDeductions' => $historicExcess,
+            'historicExcessTotal' => (float) $historicExcess->sum('excess_amount'),
             'generatedAt' => now(),
             'generatedBy' => $request->user(),
         ])->setPaper('a4', 'portrait');
@@ -200,7 +222,39 @@ class BenefitPeriodController extends Controller
             $benefitPeriod->from_date->format('Y-m')
         );
 
-        return [$pdf, $filename, $reimbursements, (float) $total];
+        return [$pdf, $filename, $reimbursements, (float) $total, $excessTotal];
+    }
+
+    /**
+     * Sum of the automatic excess GHP of the ACTIVE (non-voided) claims in
+     * $reimbursements. Display/reporting only.
+     */
+    private function excessTotalOf(\Illuminate\Support\Collection $reimbursements): float
+    {
+        return round((float) $reimbursements->where('is_voided', false)->sum('excess_amount'), 2);
+    }
+
+    /**
+     * Sum of the excess GHP already covered by dependent-driven fund increases
+     * on the ACTIVE claims. Display/reporting only.
+     */
+    private function excessCoveredTotalOf(\Illuminate\Support\Collection $reimbursements): float
+    {
+        return round((float) $reimbursements->where('is_voided', false)->sum('excess_covered_amount'), 2);
+    }
+
+    /**
+     * Older excess deductions that were recorded by hand before excess GHP
+     * became automatic (table `excess_deductions`), oldest month first. Kept
+     * as read-only history; nothing creates them any more and they are never
+     * fed into any GHP calculation.
+     */
+    private function excessDeductionsFor(BenefitPeriod $benefitPeriod): \Illuminate\Support\Collection
+    {
+        return $benefitPeriod->excessDeductions()
+            ->with(['reimbursement', 'recordedBy'])
+            ->orderBy('deduction_month')
+            ->get();
     }
 
     /**
