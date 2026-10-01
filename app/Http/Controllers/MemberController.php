@@ -113,7 +113,7 @@ class MemberController extends Controller
             ->with('status', "Member {$member->code} created.");
     }
 
-    public function show(Member $member, BenefitAccrualService $accrualService): View
+    public function show(Member $member, BenefitAccrualService $accrualService, DependentEligibilityService $eligibility): View
     {
         $member->load([
             'division',
@@ -157,6 +157,9 @@ class MemberController extends Controller
             'currentCycleStart' => $currentCycleStart,
             'currentCycleEnd' => $currentCycleEnd,
             'cycleDefaults' => $accrualService->standardCycleDefaults(),
+            // Recomputed on every page load from the member's current reimbursements,
+            // so voiding/cancelling the last active claim re-enables Remove at once.
+            'dependentRemovalBlocked' => $eligibility->hasActiveReimbursement($member),
             'requiredGhp' => $member->deduction_start_date ? $accrualService->requiredAmountForCycle($member) : null,
         ]);
     }
@@ -325,11 +328,12 @@ class MemberController extends Controller
     {
         abort_unless(auth()->user()->isAdmin(), 403);
 
-        if (! $member->is_active) {
-            return redirect()->route('members.show', $member)
-                ->with('status', "Can't generate a benefit period — {$member->code} is marked Inactive.");
-        }
-
+        // No is_active check here: the 'member.active' route middleware
+        // (EnsureMemberIsActive) already rejects this entire route for a
+        // deactivated member before the controller ever runs, with the
+        // standard deactivation message/redirect. Duplicating that check
+        // here would just be unreachable dead code with a second, different
+        // message for the same condition.
         if ($member->deduction_start_date === null) {
             return redirect()->route('members.show', $member)
                 ->with('status', "Can't generate a benefit period — {$member->code} has no deduction start date on file.");

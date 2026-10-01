@@ -69,7 +69,7 @@
                         <th>OR no.</th>
                         <th>Hospital</th>
                         <th class="num">Amount</th>
-                        <th class="num">Available GHP</th>
+                        <th class="num">Remaining GHP</th>
                         <th class="num">Excess Deduction</th>
                         <th>Status</th>
                     </tr>
@@ -128,7 +128,7 @@
             </div>
 
             <p class="hint" style="margin-top: 10px; margin-bottom: 0;">
-                Excess deduction = reimbursement amount &minus; the Available GHP at the time it was filed. It is calculated automatically when a reimbursement is filed (nothing is entered by hand) and is recorded for tracking and reporting only: it is not a reimbursement, not a GHP contribution, and does not change GHP usage, the available balance or the original GHP requirements.
+                Excess deduction = reimbursement amount &minus; the Remaining GHP at the time it was filed. It is calculated automatically when a reimbursement is filed (nothing is entered by hand) and is recorded for tracking and reporting only: it is not a reimbursement, not a GHP contribution, and does not change GHP usage, the available balance or the original GHP requirements.
             </p>
         @endif
     </div>

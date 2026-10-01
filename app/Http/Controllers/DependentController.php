@@ -80,14 +80,23 @@ class DependentController extends Controller
             ->with('status', "Dependent updated for {$member->code}.");
     }
 
+    /**
+     * Removal is guarded on the BACKEND: DependentEligibilityService::
+     * removeDependent() refuses while the member has an active (non-voided)
+     * reimbursement, whatever the page showed — the disabled Remove button is
+     * only a convenience, so a hand-built DELETE request is rejected too.
+     * A rejected request deletes and recalculates nothing.
+     */
     public function destroy(Member $member, Dependent $dependent, DependentEligibilityService $eligibility): RedirectResponse
     {
         abort_unless(auth()->user()->isAdmin(), 403);
         abort_unless($dependent->member_id === $member->id, 404);
 
-        $dependent->delete();
-
-        $eligibility->recalculateBenefit($member);
+        try {
+            $eligibility->removeDependent($member, $dependent);
+        } catch (RuntimeException $e) {
+            return redirect()->route('members.show', $member)->with('status', $e->getMessage());
+        }
 
         return redirect()->route('members.show', $member)
             ->with('status', "Dependent removed for {$member->code}.");

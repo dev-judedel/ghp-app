@@ -12,6 +12,11 @@
     // Relation is free text — same case-insensitive spouse match DependentEligibilityService::hasSpouse() uses.
     $memberHasSpouse = $member->dependents->contains(fn ($d) => strtolower(trim($d->relation)) === 'spouse');
     $hasVoidErrors = $errors->any() && $errors->has('reason');
+    // A deactivated member is read-only: every control that changes or processes
+    // their records is rendered disabled (and its modal is not rendered at all),
+    // and the same rule is enforced on the server by EnsureMemberIsActive.
+    $memberLocked = ! $member->is_active;
+    $lockedNotice = \App\Http\Middleware\EnsureMemberIsActive::MESSAGE;
 @endphp
 
 @section('content')
@@ -20,6 +25,24 @@
     <div style="margin-bottom: 16px;">
         <a href="{{ route('members.index') }}">&larr; Back to members</a>
     </div>
+
+    @if ($memberLocked)
+        <div class="card" role="alert" data-member-locked="1" style="border-left: 3px solid var(--danger, #C62828);">
+            <div class="card-head" style="margin-bottom: 0;">
+                <div>
+                    <strong style="color: var(--danger, #C62828);">{{ $lockedNotice }}</strong>
+                    <p class="hint" style="margin: 4px 0 0;">Existing records (dependents, reimbursements, benefit periods, history) stay visible and can still be printed or downloaded. Nothing is changed or deleted by deactivation; reactivating the member makes the actions available again.</p>
+                </div>
+                @if (auth()->user()->isAdmin())
+                    <form method="POST" action="{{ route('members.update-status', $member) }}" onsubmit="return confirm('Reactivate {{ $member->code }}? Nothing blocked while deactivated is processed automatically.');">
+                        @csrf
+                        @method('PATCH')
+                        <button type="submit" class="btn btn-primary">Reactivate member</button>
+                    </form>
+                @endif
+            </div>
+        </div>
+    @endif
 
     <div class="card">
         <div class="card-head">
@@ -35,7 +58,7 @@
             </span>
             <a href="{{ route('members.mdr', $member) }}" class="btn btn-ghost" style="margin-left: auto;" target="_blank">Print MDR</a>
             @if (auth()->user()->isAdmin())
-                <button type="button" class="btn btn-ghost" onclick="editMemberModal.showModal()">Edit member</button>
+                <button type="button" class="btn btn-ghost" @if ($memberLocked) disabled aria-disabled="true" title="{{ $lockedNotice }}" @else onclick="editMemberModal.showModal()" @endif>Edit member</button>
             @endif
         </div>
 
@@ -100,21 +123,21 @@
                         <span class="badge badge-agent" style="align-self: center;">Manual override</span>
                         <form method="POST" action="{{ route('members.amount-adjustments.revert-to-automatic', $member) }}" onsubmit="return confirm('Revert {{ $member->code }} to the automatic GHP amount based on current dependents?');">
                             @csrf
-                            <button type="submit" class="btn btn-ghost">Revert to automatic</button>
+                            <button type="submit" class="btn btn-ghost" @if ($memberLocked) disabled aria-disabled="true" title="{{ $lockedNotice }}" @endif>Revert to automatic</button>
                         </form>
                     @endif
-                    <button type="button" class="btn btn-ghost" onclick="adjustAmountModal.showModal()">Adjust GHP amount</button>
+                    <button type="button" class="btn btn-ghost" @if ($memberLocked) disabled aria-disabled="true" title="{{ $lockedNotice }}" @else onclick="adjustAmountModal.showModal()" @endif>Adjust GHP amount</button>
                 @endif
                 @if ($currentCyclePeriod)
                     <button type="button" class="btn btn-ghost" disabled
                         title="Benefit period already generated for the current GHP cycle ({{ $currentCycleStart->format('M d, Y') }} – {{ $currentCycleEnd->format('M d, Y') }}). Available again after {{ $currentCycleEnd->format('M d, Y') }}.">
                         Generate this year's benefit period
                     </button>
-                @elseif (auth()->user()->isAdmin())
+                @elseif (auth()->user()->isAdmin() && ! $memberLocked)
                     <button type="button" class="btn btn-primary" id="generateBenefitPeriodButton" onclick="generateBenefitPeriodModal.showModal()">Generate this year's benefit period</button>
                 @else
                     {{-- The generate route is admin-only; don't offer a click that can only 403. --}}
-                    <button type="button" class="btn btn-ghost" disabled title="Only an administrator can generate a benefit period.">Generate this year's benefit period</button>
+                    <button type="button" class="btn btn-ghost" disabled aria-disabled="true" title="{{ $memberLocked ? $lockedNotice : 'Only an administrator can generate a benefit period.' }}">Generate this year's benefit period</button>
                 @endif
             </div>
         </div>
@@ -183,7 +206,7 @@
                 <h2>Dependents</h2>
             </div>
             @if (auth()->user()->isAdmin())
-                <button type="button" class="btn btn-primary" onclick="openAddDependent()">+ Add dependent</button>
+                <button type="button" class="btn btn-primary" @if ($memberLocked) disabled aria-disabled="true" title="{{ $lockedNotice }}" @else onclick="openAddDependent()" @endif>+ Add dependent</button>
             @endif
         </div>
 
@@ -222,19 +245,27 @@
                                     {{-- Only while still waiting on the normal Benefit Period rule; the backend re-checks this, the button is just a convenience. --}}
                                     @if ($dependent->canBeMadeImmediatelyEligible())
                                         <button type="button" class="btn btn-primary" style="padding: 4px 10px; font-size: 12px;"
-                                            onclick="openImmediateEligibility({{ $dependent->id }}, {{ json_encode($dependent->name) }}, {{ json_encode($dependent->relation) }}, {{ json_encode(optional($dependent->eligibility_date)->format('F d, Y')) }})">
+                                            @disabled($memberLocked) @if ($memberLocked) aria-disabled="true" title="{{ $lockedNotice }}" @endif onclick="openImmediateEligibility({{ $dependent->id }}, {{ json_encode($dependent->name) }}, {{ json_encode($dependent->relation) }}, {{ json_encode(optional($dependent->eligibility_date)->format('F d, Y')) }})">
                                             Immediate Eligibility
                                         </button>
                                     @endif
                                     <button type="button" class="btn btn-ghost" style="padding: 4px 10px; font-size: 12px;"
-                                        onclick="openEditDependent({{ $dependent->id }}, {{ json_encode($dependent->name) }}, {{ json_encode($dependent->relation) }}, {{ json_encode(optional($dependent->birthdate)->toDateString()) }})">
+                                        @disabled($memberLocked) @if ($memberLocked) aria-disabled="true" title="{{ $lockedNotice }}" @endif onclick="openEditDependent({{ $dependent->id }}, {{ json_encode($dependent->name) }}, {{ json_encode($dependent->relation) }}, {{ json_encode(optional($dependent->birthdate)->toDateString()) }})">
                                         Edit
                                     </button>
-                                    <form method="POST" action="{{ route('members.dependents.destroy', [$member, $dependent]) }}" style="display: inline;" onsubmit="return confirm('Remove {{ $dependent->name }} as a dependent?');">
-                                        @csrf
-                                        @method('DELETE')
-                                        <button type="submit" class="btn btn-ghost" style="padding: 4px 10px; font-size: 12px; color: var(--danger);">Remove</button>
-                                    </form>
+                                    @if ($dependentRemovalBlocked)
+                                        {{-- Member has an active (non-voided) reimbursement: no form, no confirm dialog, nothing to submit. The backend refuses the removal regardless. The tooltip is on the wrapper because disabled buttons often don't show their own. --}}
+                                        <span title="{{ \App\Services\DependentEligibilityService::REMOVAL_BLOCKED_MESSAGE }}" style="display: inline-block; cursor: not-allowed;">
+                                            <button type="button" class="btn btn-ghost" disabled aria-disabled="true" data-dependent-remove="blocked"
+                                                style="padding: 4px 10px; font-size: 12px; color: var(--danger); opacity: 0.4; pointer-events: none;">Remove</button>
+                                        </span>
+                                    @else
+                                        <form method="POST" action="{{ route('members.dependents.destroy', [$member, $dependent]) }}" style="display: inline;" onsubmit="return confirm('Remove {{ $dependent->name }} as a dependent?');">
+                                            @csrf
+                                            @method('DELETE')
+                                            <button type="submit" class="btn btn-ghost" data-dependent-remove="allowed" @if ($memberLocked) disabled aria-disabled="true" title="{{ $lockedNotice }}" @endif style="padding: 4px 10px; font-size: 12px; color: var(--danger);">Remove</button>
+                                        </form>
+                                    @endif
                                 </td>
                             @endif
                         </tr>
@@ -286,7 +317,7 @@
                 <h2>Reimbursements</h2>
             </div>
             @if (auth()->user()->isAdmin())
-                <button type="button" class="btn btn-primary" onclick="openFileReimbursement()">+ File reimbursement</button>
+                <button type="button" class="btn btn-primary" @if ($memberLocked) disabled aria-disabled="true" title="{{ $lockedNotice }}" @else onclick="openFileReimbursement()" @endif>+ File reimbursement</button>
             @endif
         </div>
 
@@ -297,7 +328,7 @@
                 <thead>
                     <tr>
                         <th>OR date</th><th>OR no.</th><th>Hospital</th><th class="num">Amount</th>
-                        <th class="num">Available GHP</th><th class="num">Excess Deduction</th><th>Status</th>
+                        <th class="num">Remaining GHP</th><th class="num">Excess Deduction</th><th>Status</th>
                         @if (auth()->user()->isAdmin())
                             <th></th>
                         @endif
@@ -332,15 +363,15 @@
                                     @if ($reimbursement->is_voided)
                                         <form method="POST" action="{{ route('members.reimbursements.unvoid', [$member, $reimbursement]) }}" style="display: inline;" onsubmit="return confirm('Un-void this reimbursement? It will count against the GHP fund again.');">
                                             @csrf
-                                            <button type="submit" class="btn btn-ghost" style="padding: 4px 10px; font-size: 12px;">Unvoid</button>
+                                            <button type="submit" class="btn btn-ghost" style="padding: 4px 10px; font-size: 12px;" @if ($memberLocked) disabled aria-disabled="true" title="{{ $lockedNotice }}" @endif>Unvoid</button>
                                         </form>
                                     @else
                                         <button type="button" class="btn btn-ghost" style="padding: 4px 10px; font-size: 12px;"
-                                            onclick="openEditReimbursement({{ $reimbursement->id }}, {{ json_encode($reimbursement->or_no) }}, {{ json_encode($reimbursement->or_date->toDateString()) }}, {{ $reimbursement->or_amount }}, {{ json_encode($reimbursement->hospital_name) }}, {{ json_encode($reimbursement->description) }}, {{ json_encode($reimbursement->remarks) }})">
+                                            @disabled($memberLocked) @if ($memberLocked) aria-disabled="true" title="{{ $lockedNotice }}" @endif onclick="openEditReimbursement({{ $reimbursement->id }}, {{ json_encode($reimbursement->or_no) }}, {{ json_encode($reimbursement->or_date->toDateString()) }}, {{ $reimbursement->or_amount }}, {{ json_encode($reimbursement->hospital_name) }}, {{ json_encode($reimbursement->description) }}, {{ json_encode($reimbursement->remarks) }})">
                                             Edit
                                         </button>
                                         <button type="button" class="btn btn-ghost" style="padding: 4px 10px; font-size: 12px; color: var(--danger);"
-                                            onclick="openVoidReimbursement({{ $reimbursement->id }}, {{ json_encode($reimbursement->or_no ?: $reimbursement->or_date->format('M d, Y')) }})">
+                                            @disabled($memberLocked) @if ($memberLocked) aria-disabled="true" title="{{ $lockedNotice }}" @endif onclick="openVoidReimbursement({{ $reimbursement->id }}, {{ json_encode($reimbursement->or_no ?: $reimbursement->or_date->format('M d, Y')) }})">
                                             Void
                                         </button>
                                     @endif
@@ -428,7 +459,7 @@
     @endif
 
     {{-- Generate benefit period confirmation. Only rendered while the current cycle has NO period yet (the button that opens it is only enabled then). --}}
-    @if (auth()->user()->isAdmin() && ! $currentCyclePeriod)
+    @if (auth()->user()->isAdmin() && ! $currentCyclePeriod && ! $memberLocked)
         <dialog id="generateBenefitPeriodModal" class="modal">
             <form method="POST" action="{{ route('members.generate-benefit-period', $member) }}" id="generateBenefitPeriodForm" onsubmit="return lockGenerateBenefitPeriodSubmit();">
                 @csrf
@@ -490,8 +521,8 @@
         </script>
     @endif
 
-    {{-- Adjust GHP amount modal --}}
-    @if (auth()->user()->isAdmin())
+    {{-- Adjust GHP amount modal (not rendered for a deactivated member) --}}
+    @if (auth()->user()->isAdmin() && ! $memberLocked)
         <dialog id="adjustAmountModal" class="modal">
             <form method="POST" action="{{ route('members.amount-adjustments.store', $member) }}">
                 @csrf
@@ -550,8 +581,8 @@
         @endif
     @endif
 
-    {{-- Add/Edit reimbursement modal (shared) --}}
-    @if (auth()->user()->isAdmin())
+    {{-- Add/Edit reimbursement modal (shared; not rendered for a deactivated member) --}}
+    @if (auth()->user()->isAdmin() && ! $memberLocked)
         <dialog id="fileReimbursementModal" class="modal">
             <form method="POST" action="{{ route('members.reimbursements.store', $member) }}" id="reimbursementForm">
                 @csrf
@@ -773,8 +804,8 @@
         </script>
     @endif
 
-    {{-- Add/Edit dependent modal (shared) --}}
-    @if (auth()->user()->isAdmin())
+    {{-- Add/Edit dependent modal (shared; not rendered for a deactivated member) --}}
+    @if (auth()->user()->isAdmin() && ! $memberLocked)
         <dialog id="dependentModal" class="modal">
             <form method="POST" action="{{ route('members.dependents.store', $member) }}" id="dependentForm">
                 @csrf
@@ -860,8 +891,8 @@
             @endif
         </script>
     @endif
-    {{-- Immediate Eligibility confirmation (administrator-controlled exception to the normal Benefit Period waiting rule) --}}
-    @if (auth()->user()->isAdmin())
+    {{-- Immediate Eligibility confirmation (administrator-controlled exception to the normal Benefit Period waiting rule; not rendered for a deactivated member) --}}
+    @if (auth()->user()->isAdmin() && ! $memberLocked)
         <dialog id="immediateEligibilityModal" class="modal">
             <form method="POST" id="immediateEligibilityForm" action="">
                 @csrf
@@ -912,8 +943,8 @@
         </script>
     @endif
 
-    {{-- Edit member modal — same field structure as the Add Member modal on the list page, for consistency --}}
-    @if (auth()->user()->isAdmin())
+    {{-- Edit member modal — same field structure as the Add Member modal on the list page, for consistency (not rendered for a deactivated member) --}}
+    @if (auth()->user()->isAdmin() && ! $memberLocked)
         <dialog id="editMemberModal" class="modal" style="max-width: 640px;">
             <form method="POST" action="{{ route('members.update', $member) }}">
                 @csrf

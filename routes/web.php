@@ -56,21 +56,26 @@ Route::middleware(['auth', 'active'])->group(function () {
         Route::post('/members', [MemberController::class, 'store'])->name('members.store');
         Route::get('/members/import/template', [MemberImportController::class, 'template'])->name('members.import.template');
         Route::post('/members/import', [MemberImportController::class, 'import'])->name('members.import');
-        Route::put('/members/{member}', [MemberController::class, 'update'])->name('members.update');
-        Route::post('/members/{member}/generate-benefit-period', [MemberController::class, 'generateBenefitPeriod'])->name('members.generate-benefit-period');
+        // Routes below marked ->middleware('member.active') MODIFY or PROCESS a
+        // member's records, so they are rejected on the server for a
+        // deactivated member (EnsureMemberIsActive). Deliberately NOT behind it:
+        // members.update-status and members.bulk-action (they are how a member
+        // is reactivated), and every read/print/download route.
+        Route::put('/members/{member}', [MemberController::class, 'update'])->name('members.update')->middleware('member.active');
+        Route::post('/members/{member}/generate-benefit-period', [MemberController::class, 'generateBenefitPeriod'])->name('members.generate-benefit-period')->middleware('member.active');
         Route::patch('/members/{member}/status', [MemberController::class, 'updateStatus'])->name('members.update-status');
-        Route::post('/members/{member}/reimbursements', [ReimbursementController::class, 'store'])->name('members.reimbursements.store');
-        Route::put('/members/{member}/reimbursements/{reimbursement}', [ReimbursementController::class, 'update'])->name('members.reimbursements.update');
-        Route::post('/members/{member}/reimbursements/{reimbursement}/void', [ReimbursementController::class, 'void'])->name('members.reimbursements.void');
-        Route::post('/members/{member}/reimbursements/{reimbursement}/unvoid', [ReimbursementController::class, 'unvoid'])->name('members.reimbursements.unvoid');
+        Route::post('/members/{member}/reimbursements', [ReimbursementController::class, 'store'])->name('members.reimbursements.store')->middleware('member.active');
+        Route::put('/members/{member}/reimbursements/{reimbursement}', [ReimbursementController::class, 'update'])->name('members.reimbursements.update')->middleware('member.active');
+        Route::post('/members/{member}/reimbursements/{reimbursement}/void', [ReimbursementController::class, 'void'])->name('members.reimbursements.void')->middleware('member.active');
+        Route::post('/members/{member}/reimbursements/{reimbursement}/unvoid', [ReimbursementController::class, 'unvoid'])->name('members.reimbursements.unvoid')->middleware('member.active');
 
-        Route::post('/members/{member}/dependents', [DependentController::class, 'store'])->name('members.dependents.store');
-        Route::put('/members/{member}/dependents/{dependent}', [DependentController::class, 'update'])->name('members.dependents.update');
-        Route::delete('/members/{member}/dependents/{dependent}', [DependentController::class, 'destroy'])->name('members.dependents.destroy');
-        Route::post('/members/{member}/dependents/{dependent}/immediate-eligibility', [DependentController::class, 'immediateEligibility'])->name('members.dependents.immediate-eligibility');
+        Route::post('/members/{member}/dependents', [DependentController::class, 'store'])->name('members.dependents.store')->middleware('member.active');
+        Route::put('/members/{member}/dependents/{dependent}', [DependentController::class, 'update'])->name('members.dependents.update')->middleware('member.active');
+        Route::delete('/members/{member}/dependents/{dependent}', [DependentController::class, 'destroy'])->name('members.dependents.destroy')->middleware('member.active');
+        Route::post('/members/{member}/dependents/{dependent}/immediate-eligibility', [DependentController::class, 'immediateEligibility'])->name('members.dependents.immediate-eligibility')->middleware('member.active');
 
-        Route::post('/members/{member}/amount-adjustments', [AmountAdjustmentController::class, 'store'])->name('members.amount-adjustments.store');
-        Route::post('/members/{member}/amount-adjustments/revert-to-automatic', [AmountAdjustmentController::class, 'revertToAutomatic'])->name('members.amount-adjustments.revert-to-automatic');
+        Route::post('/members/{member}/amount-adjustments', [AmountAdjustmentController::class, 'store'])->name('members.amount-adjustments.store')->middleware('member.active');
+        Route::post('/members/{member}/amount-adjustments/revert-to-automatic', [AmountAdjustmentController::class, 'revertToAutomatic'])->name('members.amount-adjustments.revert-to-automatic')->middleware('member.active');
 
         Route::get('/users', [UserController::class, 'index'])->name('users.index');
         Route::post('/users', [UserController::class, 'store'])->name('users.store');
@@ -85,7 +90,7 @@ Route::middleware(['auth', 'active'])->group(function () {
         Route::get('/activity', [ActivityLogController::class, 'index'])->name('activity.index');
 
         Route::get('/data-quality', [DataQualityController::class, 'index'])->name('data-quality.index');
-        Route::put('/benefit-periods/{benefitPeriod}', [BenefitPeriodController::class, 'update'])->name('benefit-periods.update');
+        Route::put('/benefit-periods/{benefitPeriod}', [BenefitPeriodController::class, 'update'])->name('benefit-periods.update')->middleware('member.active');
         Route::post('/members/{member}/benefit-periods/{benefitPeriod}/reimbursements/send', [BenefitPeriodController::class, 'sendReceipt'])->name('members.benefit-periods.reimbursements.send');
     });
 

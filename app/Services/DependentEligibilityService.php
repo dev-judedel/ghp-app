@@ -152,6 +152,52 @@ class DependentEligibilityService
     }
 
     /**
+     * Shown (page tooltip and backend rejection alike) when a dependent can't be removed.
+     */
+    public const REMOVAL_BLOCKED_MESSAGE = 'This dependent cannot be removed because the member has an active reimbursement.';
+
+    /**
+     * Whether the member has a reimbursement that blocks removing dependents.
+     *
+     * This project's only reimbursement states are Active and Voided (the
+     * existing "cancel" action — Reimbursement::void()); there is no
+     * Pending / Approved / Rejected workflow. So a claim that is ACTIVE or
+     * filed is any one that is not voided (soft-deleted rows are excluded by
+     * the model's default scope). A voided claim no longer counts against the
+     * GHP fund and no longer blocks removal; if the member has several, one
+     * qualifying claim is enough to block.
+     */
+    public function hasActiveReimbursement(Member $member): bool
+    {
+        return $member->reimbursements()->notVoided()->exists();
+    }
+
+    /**
+     * The ONE guarded way to remove a dependent. Re-checks the rule on the
+     * backend under the same member row lock ReimbursementController uses when
+     * filing, so a claim filed at the same moment can't slip past the check.
+     * Nothing is deleted or recalculated when removal is blocked.
+     *
+     * Throws RuntimeException(REMOVAL_BLOCKED_MESSAGE) when blocked; callers
+     * surface the message. Any other code path that removes a dependent must
+     * go through here.
+     */
+    public function removeDependent(Member $member, Dependent $dependent): void
+    {
+        DB::transaction(function () use ($member, $dependent) {
+            Member::whereKey($member->id)->lockForUpdate()->firstOrFail();
+
+            if ($this->hasActiveReimbursement($member)) {
+                throw new RuntimeException(self::REMOVAL_BLOCKED_MESSAGE);
+            }
+
+            $dependent->delete();
+
+            $this->recalculateBenefit($member);
+        });
+    }
+
+    /**
      * Whether $member already has a dependent recorded as a spouse.
      * Relation is free text in this schema (legacy data), so compare
      * case-insensitively and ignoring surrounding whitespace.

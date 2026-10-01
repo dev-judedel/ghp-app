@@ -35,7 +35,7 @@
                     <th>OR date</th>
                     <th>OR no.</th>
                     <th style="text-align: right;">Reimbursement Amount</th>
-                    <th style="text-align: right;">Available GHP</th>
+                    <th style="text-align: right;">Remaining GHP</th>
                     <th style="text-align: right;">Excess Deduction</th>
                 </tr>
             </thead>
@@ -55,7 +55,7 @@
 
         @if ($excessTotal > 0)
             <p style="color: #C62828; font-size: 12px; margin-top: 0;">
-                Excess Deduction is the part of a reimbursement above the Available GHP at the time it was filed. It is recorded for tracking only and does not change your GHP usage or requirements.
+                Excess Deduction is the part of a reimbursement above the Remaining GHP at the time it was filed. It is recorded for tracking only and does not change your GHP usage or requirements.
             </p>
         @endif
     @endif

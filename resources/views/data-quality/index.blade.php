@@ -32,7 +32,7 @@
                             <td class="num amount">&#8369;{{ number_format($period->ghp_amount, 2) }}</td>
                             <td>
                                 <button type="button" class="btn btn-ghost" style="padding: 4px 10px; font-size: 12px;"
-                                    onclick="openCorrectPeriod({{ $period->id }}, {{ json_encode($period->from_date->toDateString()) }}, {{ json_encode($period->to_date->toDateString()) }}, {{ $period->ghp_amount }}, {{ $period->ghp_used }}, {{ $period->ghp_available }}, {{ json_encode($period->member->code) }})">
+                                    @disabled(! $period->member->is_active) @if (! $period->member->is_active) aria-disabled="true" title="{{ \App\Http\Middleware\EnsureMemberIsActive::MESSAGE }}" @endif onclick="openCorrectPeriod({{ $period->id }}, {{ json_encode($period->from_date->toDateString()) }}, {{ json_encode($period->to_date->toDateString()) }}, {{ $period->ghp_amount }}, {{ $period->ghp_used }}, {{ $period->ghp_available }}, {{ json_encode($period->member->code) }})">
                                     Correct
                                 </button>
                             </td>

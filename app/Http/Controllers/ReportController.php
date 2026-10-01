@@ -175,7 +175,7 @@ class ReportController extends Controller
 
         return $this->streamCsv(
             'reimbursement-report-'.$request->query('from').'-to-'.$request->query('to').'.csv',
-            ['OR Date', 'Member Code', 'Member Name', 'Type', 'Division', 'OR No', 'Hospital', 'Amount', 'Available GHP', 'Original Excess', 'Excess Covered', 'Excess Deduction', 'Voided', 'Voided Reason'],
+            ['OR Date', 'Member Code', 'Member Name', 'Type', 'Division', 'OR No', 'Hospital', 'Amount', 'Remaining GHP', 'Original Excess', 'Excess Covered', 'Excess Deduction', 'Voided', 'Voided Reason'],
             $reimbursements->map(fn ($r) => [
                 $r->or_date->format('Y-m-d'),
                 $r->member->code,
@@ -185,7 +185,7 @@ class ReportController extends Controller
                 $r->or_no ?? '',
                 $r->hospital_name ?? '',
                 $r->or_amount,
-                // Blank for claims filed before Available GHP was recorded (no figure to show).
+                // Blank for claims filed before Remaining GHP was recorded (no figure to show).
                 $r->available_ghp ?? '',
                 // Original excess when filed, how much a dependent-driven increase has
                 // covered since, and (next column) what is still outstanding.

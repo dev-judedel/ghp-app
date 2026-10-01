@@ -397,15 +397,17 @@ class ExcessDeductionTest extends TestCase
 
         $csv = $response->streamedContent();
 
-        $this->assertStringContainsString('Available GHP', $csv);
+        $this->assertStringContainsString('Remaining GHP', $csv);
+        $this->assertStringNotContainsString('Available GHP', $csv);
         $this->assertStringContainsString('Excess Deduction', $csv);
 
         $rows = array_map('str_getcsv', array_filter(explode("\n", trim($csv))));
         $header = array_shift($rows);
         $excessIndex = array_search('Excess Deduction', $header, true);
         $orNoIndex = array_search('OR No', $header, true);
-        $availableIndex = array_search('Available GHP', $header, true);
+        $availableIndex = array_search('Remaining GHP', $header, true);
         $this->assertNotFalse($excessIndex);
+        $this->assertNotFalse($availableIndex);
 
         $byOrNo = [];
         foreach ($rows as $row) {
@@ -463,7 +465,8 @@ class ExcessDeductionTest extends TestCase
         $html = $this->renderReceipt($member, $period);
 
         $this->assertStringContainsString('Excess Deduction', $html);
-        $this->assertStringContainsString('Available GHP', $html);
+        $this->assertStringContainsString('Remaining GHP', $html);
+        $this->assertStringNotContainsString('Available GHP', $html);
         $this->assertStringContainsString('#C62828', $html);                       // fixed red hex, prints red
         $this->assertSame(1, substr_count($html, 'class=" excess"'));              // only the claim with an excess
         $this->assertStringContainsString('₱'.number_format((float) $this->claim($member, 'OR-BIG')->excess_amount, 2), str_replace('&#8369;', '₱', $html));
@@ -577,6 +580,44 @@ class ExcessDeductionTest extends TestCase
         $this->assertSame(0.0, (float) $b->excess_amount);
     }
 
+    // ---- Column label: "Remaining GHP" (was "Available GHP") on every reimbursement table ----
+
+    public function test_the_reimbursement_tables_and_emailed_receipt_label_the_column_remaining_ghp(): void
+    {
+        Mail::fake();
+        $member = $this->memberWith3000Available();
+        $this->file($member, 5000);
+        $period = $member->benefitPeriods()->firstOrFail();
+        $admin = $this->admin();
+
+        // Screen tables: member page + coverage-year records page.
+        foreach ([
+            route('members.show', $member),
+            route('members.benefit-periods.reimbursements', [$member, $period]),
+        ] as $url) {
+            $page = $this->actingAs($admin)->get($url)->assertOk()->getContent();
+
+            $this->assertStringContainsString('Remaining GHP</th>', $page);
+            $this->assertStringNotContainsString('Available GHP</th>', $page);
+        }
+
+        // Email body.
+        $this->actingAs($admin)->post(route('members.benefit-periods.reimbursements.send', [$member, $period]));
+
+        $html = null;
+        Mail::assertSent(ReimbursementReceiptMail::class, function (ReimbursementReceiptMail $mail) use (&$html) {
+            $html = $mail->render();
+
+            return true;
+        });
+
+        $this->assertStringContainsString('Remaining GHP', $html);
+        $this->assertStringNotContainsString('Available GHP', $html);
+
+        // The stored value is unchanged by the rename (still the balance when it was filed).
+        $this->assertSame(3000.0, (float) $this->claim($member)->available_ghp);
+    }
+
     // ---- Downloads: the Member Data Record printout ----
 
     public function test_the_member_data_record_lists_available_ghp_and_excess_deduction_with_only_the_excess_row_red(): void
@@ -597,7 +638,8 @@ class ExcessDeductionTest extends TestCase
             'generatedAt' => now(),
         ])->render();
 
-        $this->assertStringContainsString('Available GHP', $html);
+        $this->assertStringContainsString('Remaining GHP', $html);
+        $this->assertStringNotContainsString('Available GHP', $html);
         $this->assertStringContainsString('Excess Deduction', $html);
         $this->assertSame(1, substr_count($html, 'class="excess"'));
 

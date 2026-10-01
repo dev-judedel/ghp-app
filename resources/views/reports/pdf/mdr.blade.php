@@ -99,7 +99,7 @@
         <p>No reimbursements on file.</p>
     @else
         <table class="data">
-            <thead><tr><th>OR date</th><th>OR no.</th><th>Hospital</th><th class="num">Amount</th><th class="num">Available GHP</th><th class="num">Excess Deduction</th></tr></thead>
+            <thead><tr><th>OR date</th><th>OR no.</th><th>Hospital</th><th class="num">Amount</th><th class="num">Remaining GHP</th><th class="num">Excess Deduction</th></tr></thead>
             <tbody>
                 @foreach ($member->reimbursements as $reimbursement)
                     {{-- Red ONLY for an active claim whose automatic excess GHP is above zero. --}}

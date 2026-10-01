@@ -45,7 +45,7 @@
                 <th>OR no.</th>
                 <th>Hospital</th>
                 <th class="num">Amount</th>
-                <th class="num">Available GHP</th>
+                <th class="num">Remaining GHP</th>
                 <th class="num">Excess Deduction</th>
             </tr>
         </thead>
@@ -74,6 +74,6 @@
         </tbody>
     </table>
 
-    <div class="footer">Excess Deduction = reimbursement amount &minus; the Available GHP when it was filed; recorded for tracking only (not added to the total and not GHP usage). Group Hospitalization Plan &mdash; internal system. Generated {{ $generatedAt->format('Y-m-d H:i') }}.</div>
+    <div class="footer">Excess Deduction = reimbursement amount &minus; the Remaining GHP when it was filed; recorded for tracking only (not added to the total and not GHP usage). Group Hospitalization Plan &mdash; internal system. Generated {{ $generatedAt->format('Y-m-d H:i') }}.</div>
 </body>
 </html>

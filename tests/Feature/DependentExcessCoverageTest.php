@@ -435,7 +435,8 @@ class DependentExcessCoverageTest extends TestCase
         $row = $rows[0];
 
         $this->assertEqualsWithDelta(3750.0, (float) $row[array_search('Amount', $header, true)], 0.001);
-        $this->assertEqualsWithDelta(3000.0, (float) $row[array_search('Available GHP', $header, true)], 0.001);
+        // Column is labelled "Remaining GHP" (renamed from "Available GHP" display-only, task.md §2.20) — still reimbursements.available_ghp underneath.
+        $this->assertEqualsWithDelta(3000.0, (float) $row[array_search('Remaining GHP', $header, true)], 0.001);
         $this->assertEqualsWithDelta(750.0, (float) $row[array_search('Original Excess', $header, true)], 0.001);
         $this->assertEqualsWithDelta(500.0, (float) $row[array_search('Excess Covered', $header, true)], 0.001);
         $this->assertEqualsWithDelta(250.0, (float) $row[array_search('Excess Deduction', $header, true)], 0.001);

@@ -145,24 +145,33 @@ class GenerateBenefitPeriodButtonTest extends TestCase
 
     // ---- Test 5: a failed generation leaves the button enabled for a retry ----
 
+    /**
+     * The inactive-member case is covered separately by
+     * InactiveMemberLockTest (the 'member.active' route middleware rejects
+     * the whole request before this controller runs, with its own message
+     * and its own locked-UI state — the button isn't just "enabled", the
+     * Generate modal isn't rendered at all). This test uses a rejection
+     * cause that's still handled inside the controller itself: a missing
+     * deduction_start_date.
+     */
     public function test_a_rejected_generation_does_not_disable_the_button(): void
     {
         $admin = $this->admin();
-        $inactive = $this->member(['is_active' => false]);
+        $noDedStart = $this->member(['deduction_start_date' => null]);
 
         $this->actingAs($admin)
-            ->post(route('members.generate-benefit-period', $inactive))
+            ->post(route('members.generate-benefit-period', $noDedStart))
             ->assertSessionHas('status', fn ($s) => str_contains($s, "Can't generate"));
 
-        $this->assertSame(0, $inactive->benefitPeriods()->count());
-        $this->assertButtonEnabled($admin, $inactive);
+        $this->assertSame(0, $noDedStart->benefitPeriods()->count());
+        $this->assertButtonEnabled($admin, $noDedStart);
 
         // ...and once the cause is fixed, the retry succeeds.
-        $inactive->update(['is_active' => true]);
-        $this->actingAs($admin)->post(route('members.generate-benefit-period', $inactive));
+        $noDedStart->update(['deduction_start_date' => '2026-06-01']);
+        $this->actingAs($admin)->post(route('members.generate-benefit-period', $noDedStart));
 
-        $this->assertSame(1, $inactive->benefitPeriods()->count());
-        $this->assertButtonDisabled($admin, $inactive);
+        $this->assertSame(1, $noDedStart->benefitPeriods()->count());
+        $this->assertButtonDisabled($admin, $noDedStart);
     }
 
     // ---- Tests 6 + 7 and the cycle boundary: April 1 starts the next cycle ----
@@ -233,6 +242,13 @@ class GenerateBenefitPeriodButtonTest extends TestCase
         $this->assertButtonEnabled($admin, $member);
 
         // Spouse added through Edit Member.
+        // is_active must be sent explicitly: a real submit of the Edit Member
+        // form always includes it (the checkbox starts checked for an active
+        // member — see members/show.blade.php), and MemberController::update()
+        // reads it with $request->boolean('is_active', false), matching normal
+        // HTML checkbox semantics (omitted = unchecked). Leaving it out of this
+        // request, the way an unrelated field-only edit never would, would
+        // silently deactivate $other as a side effect of this assertion.
         $other = $this->member(['civil_status' => Member::CIVIL_STATUS_SINGLE]);
         $this->actingAs($admin)->put(route('members.update', $other), [
             'code' => $other->code,
@@ -242,6 +258,7 @@ class GenerateBenefitPeriodButtonTest extends TestCase
             'first_name' => $other->first_name,
             'apply_date' => '2026-04-01',
             'start_date' => '2026-05-01',
+            'is_active' => '1',
             'civil_status' => '1',
             'spouse_name' => 'Maria Doe',
             'spouse_birthdate' => '1996-02-02',

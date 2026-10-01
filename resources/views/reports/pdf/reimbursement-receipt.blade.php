@@ -70,7 +70,7 @@
                     <th>OR no.</th>
                     <th>Hospital</th>
                     <th class="num">Amount</th>
-                    <th class="num">Available GHP</th>
+                    <th class="num">Remaining GHP</th>
                     <th class="num">Excess Deduction</th>
                     <th>Status</th>
                 </tr>
@@ -112,7 +112,7 @@
             <div class="excess-line {{ $excessTotal > 0 ? 'has-excess' : '' }}" style="{{ $excessTotal > 0 ? 'color: #C62828;' : '' }}">
                 Excess Deduction{{ ($excessCoveredTotal ?? 0) > 0 ? ' (Remaining Excess GHP)' : '' }}: ₱{{ number_format($excessTotal, 2) }}
                 @if ($excessTotal > 0)
-                    <div class="note">Automatically recorded when a reimbursement is above the Available GHP at filing. Tracking only &mdash; not added to the reimbursement amount and not counted as GHP usage.</div>
+                    <div class="note">Automatically recorded when a reimbursement is above the Remaining GHP at filing. Tracking only &mdash; not added to the reimbursement amount and not counted as GHP usage.</div>
                 @endif
             </div>
         </div>
