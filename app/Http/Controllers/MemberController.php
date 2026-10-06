@@ -10,6 +10,7 @@ use App\Models\Division;
 use App\Models\Member;
 use App\Services\BenefitAccrualService;
 use App\Services\DependentEligibilityService;
+use App\Services\MemberCreationService;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -82,31 +83,21 @@ class MemberController extends Controller
         return view('members.index', $viewData);
     }
 
-    public function store(StoreMemberRequest $request, BenefitAccrualService $accrualService): RedirectResponse
+    public function store(StoreMemberRequest $request, MemberCreationService $creator): RedirectResponse
     {
         // Built as a mutable array (not $validated + [...]) on purpose:
         // 'code' is now a validated key too, and array union (+) keeps the
         // LEFT side's value on collisions — that would silently ignore this
-        // override whenever the admin left it blank.
+        // override whenever the admin left it blank. MemberCreationService
+        // is shared with the CSV bulk importer (see task.md §2.26) so the
+        // two can never again diverge on how a member actually gets built —
+        // only is_active is resolved here, since "was the checkbox
+        // submitted" is an HTTP-request concept the service shouldn't know
+        // about.
         $data = $request->validated();
-        $data['code'] = $request->filled('code') ? $data['code'] : Member::generateUniqueCode();
         $data['is_active'] = $request->boolean('is_active', true);
-        // "Start Date" (the first deduction) is now an editable input: use it
-        // when the admin set one. Left blank, it is derived from start_date
-        // exactly as before — the 1st of the following month, never the start
-        // month itself (BenefitAccrualService::resolveDeductionStartDate()).
-        $data['deduction_start_date'] = filled($data['deduction_start_date'] ?? null)
-            ? $data['deduction_start_date']
-            : $accrualService->resolveDeductionStartDate($data['start_date']);
 
-        // The engine only honors members.ghp_amount when it is flagged manual
-        // (otherwise it recomputes 3,600 / 4,200 from dependents). So an amount
-        // that differs from the standard one is registered as a manual
-        // override — the same mechanism "Adjust GHP amount" uses — and the
-        // standard amount stays automatic (dependents still raise it).
-        $data['ghp_amount_is_manual'] = abs((float) $data['ghp_amount'] - $accrualService->defaultGhpAmount()) > 0.004;
-
-        $member = Member::create($data);
+        $member = $creator->create($data);
 
         return redirect()
             ->route('members.show', $member)

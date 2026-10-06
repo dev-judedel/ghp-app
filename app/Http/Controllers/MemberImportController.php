@@ -20,10 +20,14 @@ class MemberImportController extends Controller
             'member-import-template.csv',
             MemberCsvImportService::TEMPLATE_HEADERS,
             collect([
+                // code, email, old_code, member_type, last_name, first_name, middle_name,
+                // address, birthdate, civil_status, division, department, is_active,
+                // coverage_year, apply_date, coverage_end_date, start_date, deduction_start_date,
+                // ghp_amount, remarks
                 [
-                    '', 'juan.delacruz@example.com', 'Employee', 'Dela Cruz', 'Juan', 'Santos',
-                    '123 Main St, Quezon City', '1990-05-14', 'Single', '', '',
-                    '2026-01-01', '2026-01-01', '3600', '', 'Active',
+                    '', 'juan.delacruz@example.com', '', 'Employee', 'Dela Cruz', 'Juan', 'Santos',
+                    '123 Main St, Quezon City', '1990-05-14', 'Single', '', '', 'Active',
+                    '2026', '2026-04-01', '2027-03-31', '2026-04-01', '', '3600', '',
                 ],
             ])
         );

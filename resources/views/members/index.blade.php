@@ -331,11 +331,20 @@
                             <label>Required columns</label>
                             <p class="hint" style="margin-top: 0;">
                                 <code>email</code>, <code>member_type</code> (Employee/Agent), <code>last_name</code>,
-                                <code>first_name</code>, and <code>ghp_amount</code> must be filled in for every row —
-                                a row missing any of these is skipped and reported below, the rest of the file still
-                                imports. <code>code</code> is optional: leave it blank to auto-generate ALSC-######.
-                                Everything else (middle_name, address, birthdate, civil_status, division, department,
-                                apply_date, deduction_start_date, old_code, is_active) is optional too.
+                                <code>first_name</code>, <code>apply_date</code>, <code>start_date</code> and
+                                <code>ghp_amount</code> must be filled in for every row — these are exactly the fields
+                                the single "Add member" form itself requires. A row missing any of these, or with an
+                                invalid value, is skipped and reported below with the reason; the rest of the file
+                                still imports. <code>code</code> is optional: leave it blank to auto-generate
+                                ALSC-######. <code>coverage_year</code> and <code>coverage_end_date</code> are optional
+                                individually but must be filled in together if either one is. Everything else
+                                (middle_name, address, birthdate, civil_status, division, department, old_code,
+                                is_active, deduction_start_date, remarks) is optional too.
+                            </p>
+                            <p class="hint" style="margin-top: 4px;">
+                                A row whose email or code already exists in the database — active or inactive — is
+                                skipped as a duplicate, not re-imported or updated. The same applies to a repeated
+                                email/code within the file itself: only the first occurrence is imported.
                             </p>
                         </div>
 
@@ -347,22 +356,34 @@
                         @if ($importReport)
                             <div class="field" style="margin-bottom: 0;">
                                 <label>Import result</label>
-                                <p class="hint" style="margin-top: 0;">
-                                    <strong style="color: var(--success);">{{ $importReport['created'] }}</strong> member(s) imported
-                                    out of {{ $importReport['total'] }} row(s) read.
+                                @if ($importReport['error'] ?? null)
+                                    <p class="hint" style="margin-top: 0; color: var(--danger);">
+                                        <strong>Import stopped:</strong> {{ $importReport['error'] }}
+                                    </p>
+                                @else
+                                    <p class="hint" style="margin-top: 0;">
+                                        <strong style="color: var(--success);">{{ $importReport['created'] }}</strong> member(s) imported
+                                        out of {{ $importReport['total'] }} row(s) read.
+                                        @if (count($importReport['skipped']) > 0)
+                                            <strong style="color: var(--danger);">{{ count($importReport['skipped']) }}</strong> row(s) skipped.
+                                        @endif
+                                        @if ($importReport['truncated'] ?? false)
+                                            <br><strong style="color: var(--danger);">File was larger than 5,000 rows — only the first 5,000 were processed.</strong> Split the file and re-import the rest.
+                                        @endif
+                                    </p>
+                                    @if (! empty($importReport['unknown_columns']))
+                                        <p class="hint" style="margin-top: 4px; color: var(--danger);">
+                                            Unrecognized column(s) in the file, ignored: {{ implode(', ', $importReport['unknown_columns']) }}.
+                                            Check for typos against the sample template.
+                                        </p>
+                                    @endif
                                     @if (count($importReport['skipped']) > 0)
-                                        <strong style="color: var(--danger);">{{ count($importReport['skipped']) }}</strong> row(s) skipped.
+                                        <ul style="margin: 4px 0 0; padding-left: 18px; font-size: 12px; color: var(--ink-muted); max-height: 160px; overflow-y: auto;">
+                                            @foreach ($importReport['skipped'] as $skip)
+                                                <li>Row {{ $skip['row'] }}: {{ $skip['reason'] }}</li>
+                                            @endforeach
+                                        </ul>
                                     @endif
-                                    @if ($importReport['truncated'] ?? false)
-                                        <br><strong style="color: var(--danger);">File was larger than 5,000 rows — only the first 5,000 were processed.</strong> Split the file and re-import the rest.
-                                    @endif
-                                </p>
-                                @if (count($importReport['skipped']) > 0)
-                                    <ul style="margin: 4px 0 0; padding-left: 18px; font-size: 12px; color: var(--ink-muted); max-height: 160px; overflow-y: auto;">
-                                        @foreach ($importReport['skipped'] as $skip)
-                                            <li>Row {{ $skip['row'] }}: {{ $skip['reason'] }}</li>
-                                        @endforeach
-                                    </ul>
                                 @endif
                             </div>
                         @endif
