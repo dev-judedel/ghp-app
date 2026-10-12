@@ -26,6 +26,11 @@ class StoreReimbursementRequest extends FormRequest
             'hospital_name' => ['nullable', 'string', 'max:255'],
             'description' => ['nullable', 'string'],
             'remarks' => ['nullable', 'string'],
+            // One-time id the File reimbursement form generates each time it is
+            // opened. It is what makes a double click / re-sent request create
+            // ONE record, not two (ReimbursementController::store() + the UNIQUE
+            // index). Optional so API-style callers and older tests still work.
+            'submission_token' => ['nullable', 'string', 'max:64'],
         ];
     }
 

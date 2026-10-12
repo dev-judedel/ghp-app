@@ -5,6 +5,7 @@ use App\Http\Controllers\ActivityLogController;
 use App\Http\Controllers\AmountAdjustmentController;
 use App\Http\Controllers\Auth\AuthenticatedSessionController;
 use App\Http\Controllers\BenefitPeriodController;
+use App\Http\Controllers\BenefitPeriodClaimController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DataQualityController;
 use App\Http\Controllers\DependentController;
@@ -53,6 +54,7 @@ Route::middleware(['auth', 'active'])->group(function () {
 
     Route::middleware('admin')->group(function () {
         Route::post('/members/bulk-action', [MemberBulkActionController::class, 'store'])->name('members.bulk-action');
+        Route::post('/members/bulk-action/check-generate', [MemberBulkActionController::class, 'checkGenerate'])->name('members.bulk-action.check-generate');
         Route::post('/members', [MemberController::class, 'store'])->name('members.store');
         Route::get('/members/import/template', [MemberImportController::class, 'template'])->name('members.import.template');
         Route::post('/members/import', [MemberImportController::class, 'import'])->name('members.import');
@@ -76,6 +78,7 @@ Route::middleware(['auth', 'active'])->group(function () {
 
         Route::post('/members/{member}/amount-adjustments', [AmountAdjustmentController::class, 'store'])->name('members.amount-adjustments.store')->middleware('member.active');
         Route::post('/members/{member}/amount-adjustments/revert-to-automatic', [AmountAdjustmentController::class, 'revertToAutomatic'])->name('members.amount-adjustments.revert-to-automatic')->middleware('member.active');
+        Route::post('/members/{member}/amount-adjustments/{adjustment}/revert', [AmountAdjustmentController::class, 'revert'])->name('members.amount-adjustments.revert')->middleware('member.active');
 
         Route::get('/users', [UserController::class, 'index'])->name('users.index');
         Route::post('/users', [UserController::class, 'store'])->name('users.store');
@@ -91,6 +94,9 @@ Route::middleware(['auth', 'active'])->group(function () {
 
         Route::get('/data-quality', [DataQualityController::class, 'index'])->name('data-quality.index');
         Route::put('/benefit-periods/{benefitPeriod}', [BenefitPeriodController::class, 'update'])->name('benefit-periods.update')->middleware('member.active');
+        // Claim | Revert acts on ONE Benefit Period RECORD, by its own id (task.md §2.35).
+        Route::post('/members/{member}/benefit-periods/{benefitPeriod}/claim', [BenefitPeriodClaimController::class, 'claim'])->name('members.benefit-periods.claim')->middleware('member.active');
+        Route::post('/members/{member}/benefit-periods/{benefitPeriod}/revert', [BenefitPeriodClaimController::class, 'revert'])->name('members.benefit-periods.revert')->middleware('member.active');
         Route::post('/members/{member}/benefit-periods/{benefitPeriod}/reimbursements/send', [BenefitPeriodController::class, 'sendReceipt'])->name('members.benefit-periods.reimbursements.send');
     });
 

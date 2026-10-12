@@ -286,29 +286,195 @@
         @if ($member->benefitPeriods->isEmpty())
             <div class="empty-state"><p>No benefit period history.</p></div>
         @else
-            <p class="hint" style="margin-top: -8px; margin-bottom: 10px;">Click a period to view its reimbursement records.</p>
+            <p class="hint" style="margin-top: -8px; margin-bottom: 10px;">Each row is a <strong>Benefit Period record</strong>. One Unclaimed record collects every reimbursement filed until it is <strong>Claimed</strong>; Claim locks that record only, and the next reimbursement filed for the same coverage period opens a new record. The entitlement is the coverage period's, shown on every record — a new record is never a new grant. <strong>Revert</strong> reopens the latest Claimed record. Click a period to view its reimbursements.</p>
             <table>
                 <thead>
-                    <tr><th>Period</th><th>Coverage year</th><th class="num">GHP amount</th><th class="num">Used</th><th class="num">Available</th></tr>
+                    <tr>
+                        <th>Period</th><th class="num">GHP amount</th><th class="num">Used GHP</th><th class="num">Available GHP</th><th>Status</th>
+                        @if (auth()->user()->isAdmin())
+                            <th>Action</th>
+                        @endif
+                    </tr>
                 </thead>
                 <tbody>
+                    @php
+                        // Highest record_no of each coverage cycle: only a cycle's LATEST record can be reverted
+                        // (BenefitPeriodClaimController::revert() enforces the same rule on the server).
+                        $cycleLastRecord = $member->benefitPeriods
+                            ->groupBy(fn ($p) => $p->from_date->toDateString().'|'.$p->to_date->toDateString())
+                            ->map(fn ($group) => (int) $group->max('record_no'));
+                    @endphp
+                    {{-- One row per Benefit Period RECORD (task.md §2.35). The figures are the record's own stored share of the cycle: the entitlement is the cycle's and is never granted again by a new record. --}}
                     @foreach ($member->benefitPeriods as $period)
-                        <tr>
+                        @php
+                            $recordNo = (int) ($period->record_no ?? 1);
+                            $year = $period->coverage_year ?? $period->from_date->year;
+                            $cycleKey = $period->from_date->toDateString().'|'.$period->to_date->toDateString();
+                            $isLatestRecord = $recordNo >= ($cycleLastRecord[$cycleKey] ?? $recordNo);
+                            $recordReimbursements = $period->reimbursements;
+                            $activeReimbursements = $recordReimbursements->where('is_voided', false);
+                            $claimed = $period->isClaimed();
+                        @endphp
+                        <tr data-benefit-record-id="{{ $period->id }}" data-record-no="{{ $recordNo }}" data-record-status="{{ $claimed ? 'claimed' : 'unclaimed' }}">
                             <td>
                                 <a href="{{ route('members.benefit-periods.reimbursements', ['member' => $member, 'benefitPeriod' => $period]) }}">
                                     {{ $period->from_date->format('M Y') }} &ndash; {{ $period->to_date->format('M Y') }}
                                 </a>
+                                <span class="hint" style="margin: 0;">&middot; Coverage year {{ $year }} &middot; Record #{{ $recordNo }}</span>
+                                @if ($recordReimbursements->isEmpty())
+                                    <div class="hint" style="margin: 2px 0 0;">No reimbursements yet</div>
+                                @else
+                                    <ul data-record-reimbursements="{{ $period->id }}" style="margin: 4px 0 0; padding-left: 16px; font-size: 12px; color: var(--ink-muted);">
+                                        @foreach ($recordReimbursements as $recordReimbursement)
+                                            <li data-reimbursement-id="{{ $recordReimbursement->id }}" style="{{ $recordReimbursement->is_voided ? 'text-decoration: line-through;' : '' }}">
+                                                {{ $recordReimbursement->or_date->format('M d, Y') }}{{ $recordReimbursement->or_no ? ' · OR '.$recordReimbursement->or_no : '' }} &mdash; &#8369;{{ number_format($recordReimbursement->or_amount, 2) }}{{ $recordReimbursement->is_voided ? ' (voided)' : '' }}
+                                            </li>
+                                        @endforeach
+                                    </ul>
+                                    <div class="hint" style="margin: 2px 0 0;">{{ $activeReimbursements->count() }} reimbursement{{ $activeReimbursements->count() === 1 ? '' : 's' }} &middot; total &#8369;{{ number_format($activeReimbursements->sum('or_amount'), 2) }}</div>
+                                @endif
                             </td>
-                            <td class="code">{{ $period->coverage_year ?? $period->from_date->year }}</td>
                             <td class="num amount">&#8369;{{ number_format($period->ghp_amount, 2) }}</td>
                             <td class="num amount">&#8369;{{ number_format($period->ghp_used, 2) }}</td>
                             <td class="num amount">&#8369;{{ number_format($period->ghp_available, 2) }}</td>
+                            <td>
+                                @if ($claimed)
+                                    <span class="badge badge-ok" title="Claimed on {{ $period->claimed_at->format('M d, Y h:i A') }}. Locked: it accepts no further reimbursements.">Claimed</span>
+                                @else
+                                    <span class="badge badge-warn">Unclaimed</span>
+                                    @if ($period->isReverted())
+                                        <span class="badge badge-agent" title="Reverted {{ $period->reverted_at->format('M d, Y h:i A') }}{{ $period->revertedBy ? ' by '.$period->revertedBy->name : '' }}">Reverted</span>
+                                    @endif
+                                @endif
+                            </td>
+                            @if (auth()->user()->isAdmin())
+                                <td style="white-space: nowrap;">
+                                    {{-- Claim | Revert for THIS record only, by its own id. The server re-checks everything under a lock (BenefitPeriodClaimController) — these buttons are only a convenience. --}}
+                                    <form method="POST" action="{{ route('members.benefit-periods.claim', [$member, $period]) }}" style="display: inline;"
+                                        onsubmit="if (! confirm('Mark Record #{{ $recordNo }} ({{ $year }}) as Claimed? It will be locked, and the next reimbursement filed for this coverage period opens a new record.')) { return false; } this.querySelector('button').disabled = true;">
+                                        @csrf
+                                        <button type="submit" class="btn btn-primary" data-record-action="claim"
+                                            @if ($memberLocked) disabled aria-disabled="true" title="{{ $lockedNotice }}" @elseif ($claimed) disabled aria-disabled="true" title="This record is already Claimed." @elseif ($activeReimbursements->isEmpty()) disabled aria-disabled="true" title="{{ \App\Http\Controllers\BenefitPeriodClaimController::NOTHING_TO_CLAIM }}" @endif
+                                            style="padding: 4px 10px; font-size: 12px;">Claim</button>
+                                    </form>
+                                    @if ($memberLocked)
+                                        <button type="button" class="btn btn-ghost" data-record-action="revert" disabled aria-disabled="true" title="{{ $lockedNotice }}" style="padding: 4px 10px; font-size: 12px; color: var(--danger);">Revert</button>
+                                    @elseif (! $claimed)
+                                        <button type="button" class="btn btn-ghost" data-record-action="revert" disabled aria-disabled="true"
+                                            title="{{ $period->isReverted() ? \App\Http\Controllers\BenefitPeriodClaimController::ALREADY_REVERTED : \App\Http\Controllers\BenefitPeriodClaimController::NOTHING_TO_REVERT }}"
+                                            style="padding: 4px 10px; font-size: 12px; color: var(--danger);">Revert</button>
+                                    @elseif (! $isLatestRecord)
+                                        <button type="button" class="btn btn-ghost" data-record-action="revert" disabled aria-disabled="true"
+                                            title="{{ \App\Http\Controllers\BenefitPeriodClaimController::LATER_RECORD_EXISTS }}"
+                                            style="padding: 4px 10px; font-size: 12px; color: var(--danger);">Revert</button>
+                                    @else
+                                        <button type="button" class="btn btn-ghost" data-record-action="revert" style="padding: 4px 10px; font-size: 12px; color: var(--danger);"
+                                            onclick="openRevertBenefitPeriod({{ $period->id }}, {{ json_encode([
+                                                'member' => $member->full_name,
+                                                'code' => $member->code,
+                                                'coverageYear' => (string) $year,
+                                                'period' => 'Record #'.$recordNo,
+                                                'from' => $period->from_date->format('F d, Y').' – '.$period->to_date->format('F d, Y'),
+                                                'to' => $activeReimbursements->count().' reimbursement'.($activeReimbursements->count() === 1 ? '' : 's').' · ₱'.number_format($activeReimbursements->sum('or_amount'), 2),
+                                                'status' => 'Claimed',
+                                            ]) }})">Revert</button>
+                                    @endif
+                                </td>
+                            @endif
                         </tr>
                     @endforeach
                 </tbody>
             </table>
         @endif
     </div>
+
+    {{-- Revert reimbursement record confirmation (shared by every Claimed record). Not rendered for a deactivated member, so there is nothing for a script or keyboard action to open. Nothing happens until "Confirm Revert" is pressed. --}}
+    @if (auth()->user()->isAdmin() && ! $memberLocked)
+        <dialog id="revertBenefitPeriodModal" class="modal">
+            <form method="POST" action="" id="revertBenefitPeriodForm" onsubmit="return lockRevertBenefitPeriodSubmit();">
+                @csrf
+
+                <div class="modal-head">
+                    <h2>Revert Benefit Period record?</h2>
+                    <button type="button" class="modal-close" onclick="revertBenefitPeriodModal.close()" aria-label="Close">&times;</button>
+                </div>
+
+                <div class="modal-body">
+                    <p style="margin-bottom: 12px;">You are about to revert this Benefit Period record.</p>
+                    <table>
+                        <tbody>
+                            <tr><th style="width: 150px;">Member</th><td id="revert_member"></td></tr>
+                            <tr><th>Member code</th><td class="code" id="revert_code"></td></tr>
+                            <tr><th>Coverage year</th><td class="code" id="revert_coverage_year"></td></tr>
+                            <tr><th>Record</th><td id="revert_period"></td></tr>
+                            <tr><th>Coverage period</th><td id="revert_from"></td></tr>
+                            <tr><th>Reimbursements</th><td id="revert_to"></td></tr>
+                            <tr><th>Current status</th><td id="revert_status"></td></tr>
+                        </tbody>
+                    </table>
+                    <p class="hint" style="margin: 12px 0 0;">This reverts only this record, and only while it is the latest record of its coverage period: it is unlocked and marked Reverted, and accepts new reimbursements again. Its reimbursements stay linked to it, and no other record or benefit period is touched. A claim only sets this status, so no reimbursement amount, GHP balance or excess figure changes — and nothing is covered retroactively; only future GHP increases may reach its excess again. Do you want to continue?</p>
+                </div>
+
+                <div class="modal-foot">
+                    <button type="button" class="btn btn-ghost" onclick="revertBenefitPeriodModal.close()">Back</button>
+                    <button type="submit" class="btn btn-primary" id="revertBenefitPeriodSubmit">Confirm Revert</button>
+                </div>
+            </form>
+        </dialog>
+
+        <script>
+            // The form action is filled in per reimbursement record; the server re-validates
+            // everything (claimed state, ownership, active member, admin) and
+            // refuses a repeat, so this script is only a convenience.
+            const revertBenefitPeriodUrlTemplate = @json(route('members.benefit-periods.revert', [$member, '__PERIOD__']));
+            let revertBenefitPeriodSubmitting = false;
+            let revertBenefitPeriodTimer = null;
+
+            function openRevertBenefitPeriod(periodId, info) {
+                revertBenefitPeriodSubmitting = false;
+                resetRevertBenefitPeriodButton();
+
+                document.getElementById('revertBenefitPeriodForm').action = revertBenefitPeriodUrlTemplate.replace('__PERIOD__', encodeURIComponent(periodId));
+                document.getElementById('revert_member').textContent = info.member;
+                document.getElementById('revert_code').textContent = info.code;
+                document.getElementById('revert_coverage_year').textContent = info.coverageYear;
+                document.getElementById('revert_period').textContent = info.period;
+                document.getElementById('revert_from').textContent = info.from;
+                document.getElementById('revert_to').textContent = info.to;
+                document.getElementById('revert_status').textContent = info.status;
+
+                revertBenefitPeriodModal.showModal();
+            }
+
+            function resetRevertBenefitPeriodButton() {
+                const button = document.getElementById('revertBenefitPeriodSubmit');
+
+                button.disabled = false;
+                button.textContent = 'Confirm Revert';
+                clearTimeout(revertBenefitPeriodTimer);
+            }
+
+            // Double-click protection with a loading state. The page reloads on
+            // success (the table then shows the new status and buttons); the
+            // safety nets below stop a failed/aborted request leaving it stuck.
+            function lockRevertBenefitPeriodSubmit() {
+                if (revertBenefitPeriodSubmitting) {
+                    return false;
+                }
+
+                revertBenefitPeriodSubmitting = true;
+
+                const button = document.getElementById('revertBenefitPeriodSubmit');
+                button.disabled = true;
+                button.textContent = 'Reverting…';
+                revertBenefitPeriodTimer = setTimeout(() => { revertBenefitPeriodSubmitting = false; resetRevertBenefitPeriodButton(); }, 20000);
+
+                return true;
+            }
+
+            window.addEventListener('pageshow', () => { revertBenefitPeriodSubmitting = false; resetRevertBenefitPeriodButton(); });
+        </script>
+    @endif
 
     <div class="card">
         <div class="card-head">
@@ -352,11 +518,20 @@
                                 @if ($reimbursement->hasCoveredExcess())
                                     <div style="font-size: 11px; font-weight: normal; color: var(--ink-muted);">
                                         remaining &middot; original &#8369;{{ number_format($reimbursement->original_excess_amount, 2) }}, covered &#8369;{{ number_format($reimbursement->excess_covered_amount, 2) }}
+                                        {{-- Kept separate from a dependent-driven cover: this part came from a GHP amount adjustment and goes back to the excess if that adjustment is reverted. --}}
+                                        @if ($reimbursement->coveredByAdjustments() > 0)
+                                            <br>of which &#8369;{{ number_format($reimbursement->coveredByAdjustments(), 2) }} covered by GHP adjustment
+                                        @endif
                                     </div>
                                 @endif
                             </td>
                             <td>
                                 <span class="badge {{ $reimbursement->is_voided ? 'badge-warn' : 'badge-ok' }}">{{ $reimbursement->is_voided ? 'Voided' : 'Active' }}</span>
+                                @if ($reimbursement->isLocked())
+                                    <span class="badge badge-agent" data-reimbursement-state="claimed" title="Claimed and locked — see Coverage year history to revert it.">Claimed</span>
+                                @elseif ($reimbursement->isReverted() && ! $reimbursement->is_voided)
+                                    <span class="badge badge-agent" data-reimbursement-state="reverted">Reverted</span>
+                                @endif
                             </td>
                             @if (auth()->user()->isAdmin())
                                 <td style="white-space: nowrap;">
@@ -367,11 +542,11 @@
                                         </form>
                                     @else
                                         <button type="button" class="btn btn-ghost" style="padding: 4px 10px; font-size: 12px;"
-                                            @disabled($memberLocked) @if ($memberLocked) aria-disabled="true" title="{{ $lockedNotice }}" @endif onclick="openEditReimbursement({{ $reimbursement->id }}, {{ json_encode($reimbursement->or_no) }}, {{ json_encode($reimbursement->or_date->toDateString()) }}, {{ $reimbursement->or_amount }}, {{ json_encode($reimbursement->hospital_name) }}, {{ json_encode($reimbursement->description) }}, {{ json_encode($reimbursement->remarks) }})">
+                                            @disabled($memberLocked || $reimbursement->isLocked()) @if ($memberLocked) aria-disabled="true" title="{{ $lockedNotice }}" @elseif ($reimbursement->isLocked()) aria-disabled="true" title="{{ \App\Http\Controllers\ReimbursementController::LOCKED_MESSAGE }}" @endif onclick="openEditReimbursement({{ $reimbursement->id }}, {{ json_encode($reimbursement->or_no) }}, {{ json_encode($reimbursement->or_date->toDateString()) }}, {{ $reimbursement->or_amount }}, {{ json_encode($reimbursement->hospital_name) }}, {{ json_encode($reimbursement->description) }}, {{ json_encode($reimbursement->remarks) }})">
                                             Edit
                                         </button>
                                         <button type="button" class="btn btn-ghost" style="padding: 4px 10px; font-size: 12px; color: var(--danger);"
-                                            @disabled($memberLocked) @if ($memberLocked) aria-disabled="true" title="{{ $lockedNotice }}" @endif onclick="openVoidReimbursement({{ $reimbursement->id }}, {{ json_encode($reimbursement->or_no ?: $reimbursement->or_date->format('M d, Y')) }})">
+                                            @disabled($memberLocked || $reimbursement->isLocked()) @if ($memberLocked) aria-disabled="true" title="{{ $lockedNotice }}" @elseif ($reimbursement->isLocked()) aria-disabled="true" title="{{ \App\Http\Controllers\ReimbursementController::LOCKED_MESSAGE }}" @endif onclick="openVoidReimbursement({{ $reimbursement->id }}, {{ json_encode($reimbursement->or_no ?: $reimbursement->or_date->format('M d, Y')) }})">
                                             Void
                                         </button>
                                     @endif
@@ -385,6 +560,15 @@
     </div>
 
     @if ($member->amountAdjustments->isNotEmpty())
+        @php
+            // Only the most recent ACTIVE adjustment can be reverted on its own (earlier
+            // ones sit underneath it in the amount chain) — the server enforces the
+            // same rule; this just decides which row gets a live button.
+            $latestActiveAdjustmentId = $member->amountAdjustments
+                ->where('kind', \App\Models\BenefitAmountAdjustment::KIND_ADJUSTMENT)
+                ->whereNull('reverted_at')
+                ->max('id');
+        @endphp
         <div class="card">
             <div class="card-head">
                 <div>
@@ -395,7 +579,10 @@
             <div class="scroll-panel" tabindex="0" role="region" aria-label="Amount adjustment history (scrollable)">
             <table>
                 <thead>
-                    <tr><th>Date</th><th class="num">Old amount</th><th class="num">New amount</th><th>Reason</th><th>Reference</th><th>Recorded by</th></tr>
+                    <tr>
+                        <th>Date</th><th class="num">Old amount</th><th class="num">New amount</th>
+                        <th class="num">Excess GHP</th><th>Reason</th><th>Reference</th><th>Recorded by</th><th>Status</th>@if (auth()->user()->isAdmin())<th>Action</th>@endif
+                    </tr>
                 </thead>
                 <tbody>
                     @foreach ($member->amountAdjustments as $adjustment)
@@ -403,9 +590,57 @@
                             <td>{{ optional($adjustment->requested_at)->format('M d, Y') ?? '—' }}</td>
                             <td class="num amount">&#8369;{{ number_format($adjustment->old_amount, 2) }}</td>
                             <td class="num amount">&#8369;{{ number_format($adjustment->new_amount, 2) }}</td>
+                            <td class="num amount">
+                                {{-- A 'revert' row repurposes excess_covered_amount to mean "amount restored", not "amount covered" — see AmountAdjustmentService::revertToAutomatic(). --}}
+                                @if ($adjustment->kind === \App\Models\BenefitAmountAdjustment::KIND_REVERT)
+                                    @if ($adjustment->excess_covered_amount > 0)
+                                        <span style="color: var(--ink-muted); font-size: 12px;">&#8369;{{ number_format($adjustment->excess_covered_amount, 2) }} restored</span>
+                                    @else
+                                        &mdash;
+                                    @endif
+                                @elseif ($adjustment->increase_amount !== null)
+                                    <div style="font-size: 12px; color: var(--ink-muted);">
+                                        increase &#8369;{{ number_format($adjustment->increase_amount, 2) }}
+                                        @if ($adjustment->excess_covered_amount > 0)
+                                            <br>covered &#8369;{{ number_format($adjustment->excess_covered_amount, 2) }} of &#8369;{{ number_format($adjustment->outstanding_excess_before, 2) }} excess
+                                            <br>remaining excess &#8369;{{ number_format($adjustment->excess_remaining_after, 2) }}
+                                        @endif
+                                        @if ($adjustment->available_increase_amount > 0)
+                                            <br>&#8369;{{ number_format($adjustment->available_increase_amount, 2) }} to Available GHP
+                                        @endif
+                                    </div>
+                                @else
+                                    &mdash;
+                                @endif
+                            </td>
                             <td>{{ $adjustment->reason }}</td>
                             <td>{{ $adjustment->request_reference ?? '—' }}</td>
                             <td>{{ $adjustment->recorded_by ?? '—' }}</td>
+                            <td>
+                                @if ($adjustment->kind === \App\Models\BenefitAmountAdjustment::KIND_REVERT)
+                                    <span class="badge badge-agent">Revert</span>
+                                @elseif ($adjustment->isReverted())
+                                    <span class="badge badge-warn" title="Reverted {{ optional($adjustment->reverted_at)->format('M d, Y g:i A') }}{{ $adjustment->revertedBy ? ' by '.$adjustment->revertedBy->name : '' }}">Reverted</span>
+                                @else
+                                    <span class="badge badge-ok">Active</span>
+                                @endif
+                            </td>
+                            @if (auth()->user()->isAdmin())
+                                <td style="white-space: nowrap;">
+                                    {{-- Reverts just THIS adjustment (its own covered excess goes back to its claims; the amount returns to what it was before it). Only the latest active one is offered — the server refuses any other. "Revert to automatic" in the Benefit balance card still undoes all of them. --}}
+                                    @if ($adjustment->kind === \App\Models\BenefitAmountAdjustment::KIND_ADJUSTMENT && ! $adjustment->isReverted())
+                                        @if ($adjustment->id === $latestActiveAdjustmentId)
+                                            <form method="POST" action="{{ route('members.amount-adjustments.revert', [$member, $adjustment]) }}" style="display: inline;"
+                                                onsubmit="if (! confirm('Revert this GHP adjustment (₱{{ number_format($adjustment->old_amount, 2) }} → ₱{{ number_format($adjustment->new_amount, 2) }})? Only its own effect is undone.')) { return false; } this.querySelector('button').disabled = true;">
+                                                @csrf
+                                                <button type="submit" class="btn btn-ghost" data-adjustment-action="revert" @if ($memberLocked) disabled aria-disabled="true" title="{{ $lockedNotice }}" @endif style="padding: 4px 10px; font-size: 12px; color: var(--danger);">Revert</button>
+                                            </form>
+                                        @else
+                                            <button type="button" class="btn btn-ghost" data-adjustment-action="revert" disabled aria-disabled="true" title="{{ $memberLocked ? $lockedNotice : 'Revert the later active adjustment first (or use Revert to automatic to undo all of them).' }}" style="padding: 4px 10px; font-size: 12px; color: var(--danger);">Revert</button>
+                                        @endif
+                                    @endif
+                                </td>
+                            @endif
                         </tr>
                     @endforeach
                 </tbody>
@@ -550,6 +785,7 @@
                         <label for="new_amount">New GHP amount</label>
                         <input type="number" id="new_amount" name="new_amount" step="0.01" min="0" required>
                         <p class="hint">This overrides the automatic 3,600/4,200 calculation and sticks until reverted — it will NOT be recalculated when dependents change.</p>
+                        <p class="hint">An increase is treated like an eligible dependent: it first covers any outstanding Excess GHP (oldest claim first), and only what is left raises Available GHP. "Revert to automatic" gives the covered excess back exactly. Used GHP and reimbursement amounts are never changed.</p>
                     </div>
 
                     <div class="field">
@@ -757,9 +993,52 @@
                 document.getElementById('remarks').value = '';
                 reimbursementCreditBack = 0;
                 reimbursementIsEdit = false;
+                // A fresh one-time token for THIS opening of the form: a double click or
+                // a re-sent request carries the same token, so the server files it once.
+                setSubmissionToken(newSubmissionToken());
+                resetReimbursementSubmitLock();
                 updateReimbursementPreview();
                 fileReimbursementModal.showModal();
             }
+
+            function newSubmissionToken() {
+                return (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now().toString(36) + Math.random().toString(36).slice(2));
+            }
+
+            function setSubmissionToken(token) {
+                const form = document.getElementById('reimbursementForm');
+                let input = document.getElementById('submission_token');
+
+                if (! input) {
+                    input = document.createElement('input');
+                    input.type = 'hidden';
+                    input.name = 'submission_token';
+                    input.id = 'submission_token';
+                    form.appendChild(input);
+                }
+
+                input.value = token || '';
+                input.disabled = ! token;   // an edit never sends a token
+            }
+
+            // Convenience only (the token + the server's row lock are what actually
+            // prevent a duplicate): stop a second click while the first is in flight.
+            function resetReimbursementSubmitLock() {
+                document.getElementById('reimbursementForm').dataset.submitting = '';
+            }
+
+            document.getElementById('reimbursementForm').addEventListener('submit', function (event) {
+                if (this.dataset.submitting === '1') {
+                    event.preventDefault();
+
+                    return;
+                }
+
+                this.dataset.submitting = '1';
+                document.getElementById('reimbursementFormSubmit').disabled = true;
+            });
+
+            window.addEventListener('pageshow', resetReimbursementSubmitLock);
 
             function openEditReimbursement(id, orNo, orDate, orAmount, hospital, description, remarks) {
                 document.getElementById('reimbursementModalTitle').textContent = 'Edit reimbursement';
@@ -781,6 +1060,8 @@
                 // check in update() applies this precisely, per period.
                 reimbursementCreditBack = parseFloat(orAmount) || 0;
                 reimbursementIsEdit = true;
+                setSubmissionToken(null);
+                resetReimbursementSubmitLock();
                 updateReimbursementPreview();
                 fileReimbursementModal.showModal();
             }
@@ -794,6 +1075,8 @@
 
             @if ($hasReimbursementErrors)
                 reimbursementCreditBack = 0;
+                setSubmissionToken(newSubmissionToken());
+                resetReimbursementSubmitLock();
                 updateReimbursementPreview();
                 fileReimbursementModal.showModal();
             @endif

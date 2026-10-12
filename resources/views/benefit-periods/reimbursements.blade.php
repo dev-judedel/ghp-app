@@ -100,6 +100,11 @@
                                 <span class="badge {{ $reimbursement->is_voided ? 'badge-warn' : 'badge-ok' }}">
                                     {{ $reimbursement->is_voided ? 'Voided' : 'Active' }}
                                 </span>
+                                @if ($reimbursement->isLocked())
+                                    <span class="badge badge-agent" title="Claimed and locked">Claimed</span>
+                                @elseif ($reimbursement->isReverted() && ! $reimbursement->is_voided)
+                                    <span class="badge badge-agent">Reverted</span>
+                                @endif
                             </td>
                         </tr>
                     @endforeach

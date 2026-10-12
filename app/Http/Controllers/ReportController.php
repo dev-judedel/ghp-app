@@ -76,10 +76,31 @@ class ReportController extends Controller
             ->get()
             ->map(fn ($member) => (object) [
                 'member' => $member,
-                'period' => $member->benefitPeriods->first(),
+                'period' => $this->latestCycleSummary($member->benefitPeriods),
             ])
             ->filter(fn ($row) => $row->period !== null)
             ->values();
+    }
+
+    /**
+     * ONE set of figures for a member's latest coverage cycle (task.md §2.35).
+     * A cycle can hold several Benefit Period RECORDS; picking one row would show
+     * only that record's share of Used. BenefitPeriod::summarizeCycle() counts the
+     * entitlement once, sums Used across the records and takes Available from the
+     * last record, so the report never double-counts and never under-reports.
+     * The collection is expected newest-cycle-first (orderByDesc('from_date')).
+     */
+    private function latestCycleSummary(Collection $periods): ?BenefitPeriod
+    {
+        $latest = $periods->first();
+
+        if ($latest === null) {
+            return null;
+        }
+
+        return BenefitPeriod::summarizeCycle($periods->filter(
+            fn (BenefitPeriod $p) => $p->from_date->isSameDay($latest->from_date) && $p->to_date->isSameDay($latest->to_date)
+        ));
     }
 
     public function annualGhp(Request $request): Response
@@ -218,7 +239,7 @@ class ReportController extends Controller
 
         $pdf = Pdf::loadView('reports.pdf.mdr', [
             'member' => $member,
-            'currentBenefitPeriod' => $member->benefitPeriods->first(),
+            'currentBenefitPeriod' => $this->latestCycleSummary($member->benefitPeriods),
             'generatedAt' => now(),
         ])->setPaper('a4', 'portrait');
 

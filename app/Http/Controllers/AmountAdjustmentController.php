@@ -3,83 +3,100 @@
 namespace App\Http\Controllers;
 
 use App\Http\Requests\StoreAmountAdjustmentRequest;
+use App\Models\BenefitAmountAdjustment;
 use App\Models\Member;
-use App\Services\BenefitAccrualService;
+use App\Services\AmountAdjustmentService;
 use Illuminate\Http\RedirectResponse;
+use RuntimeException;
 
 class AmountAdjustmentController extends Controller
 {
-    public function store(StoreAmountAdjustmentRequest $request, Member $member, BenefitAccrualService $accrualService): RedirectResponse
+    public function store(StoreAmountAdjustmentRequest $request, Member $member, AmountAdjustmentService $adjustments): RedirectResponse
     {
         $oldAmount = (float) $member->ghp_amount;
         $newAmount = (float) $request->validated('new_amount');
 
-        $member->amountAdjustments()->create([
-            'old_amount' => $oldAmount,
-            'new_amount' => $newAmount,
-            'reason' => $request->validated('reason'),
-            'request_reference' => $request->validated('request_reference'),
-            'requested_at' => $request->validated('requested_at') ?? now()->toDateString(),
-            'recorded_by' => $request->user()->name,
-        ]);
-
-        // This is what makes the override stick — see BenefitAccrualService::
-        // resolveGhpAmount(). Without ghp_amount_is_manual, the next
-        // dependent change or "Generate benefit period" click would
-        // silently recalculate this back to 3600/4200.
-        $member->update([
-            'ghp_amount' => $newAmount,
-            'ghp_amount_is_manual' => true,
-        ]);
-
-        $this->refreshCurrentPeriod($member, $accrualService);
-
-        return redirect()->route('members.show', $member)
-            ->with('status', "GHP amount for {$member->code} changed from ₱".number_format($oldAmount, 2)." to ₱".number_format($newAmount, 2).'. This override will stick until reverted to automatic.');
-    }
-
-    public function revertToAutomatic(Member $member, BenefitAccrualService $accrualService): RedirectResponse
-    {
-        abort_unless(auth()->user()->isAdmin(), 403);
-
-        if (! $member->ghp_amount_is_manual) {
-            return redirect()->route('members.show', $member)->with('status', 'This member is already on the automatic GHP amount.');
+        try {
+            $adjustment = $adjustments->apply(
+                $member,
+                $newAmount,
+                $request->validated('reason'),
+                $request->validated('request_reference'),
+                $request->validated('requested_at'),
+                $request->user(),
+            );
+        } catch (RuntimeException $e) {
+            // E.g. the member was deactivated after the page loaded. Nothing was changed.
+            return redirect()->route('members.show', $member)->with('status', $e->getMessage());
         }
 
-        $oldAmount = (float) $member->ghp_amount;
+        $status = "GHP amount for {$member->code} changed from ₱".number_format($oldAmount, 2).' to ₱'.number_format($newAmount, 2).'. This override will stick until reverted to automatic.';
 
-        $member->update(['ghp_amount_is_manual' => false]);
-        $member->loadMissing('dependents');
-        $newAmount = $accrualService->resolveGhpAmount($member);
-        $member->update(['ghp_amount' => $newAmount]);
+        // Mirrors the same "covered excess first, rest to Available GHP"
+        // message the dependent-eligibility flow doesn't need to show
+        // (that one is silent/automatic) — here the admin just typed in a
+        // number, so the effect on an outstanding claim's excess is called
+        // out explicitly rather than left for them to notice on the page.
+        if ((float) $adjustment->excess_covered_amount > 0) {
+            $status .= ' ₱'.number_format($adjustment->excess_covered_amount, 2).' of the increase covered outstanding excess GHP';
+            $status .= (float) $adjustment->available_increase_amount > 0
+                ? '; the remaining ₱'.number_format($adjustment->available_increase_amount, 2).' was added to Available GHP.'
+                : '.';
+        }
 
-        $member->amountAdjustments()->create([
-            'old_amount' => $oldAmount,
-            'new_amount' => $newAmount,
-            'reason' => 'Reverted to automatic (based on current dependents)',
-            'request_reference' => null,
-            'requested_at' => now()->toDateString(),
-            'recorded_by' => auth()->user()->name,
-        ]);
-
-        $this->refreshCurrentPeriod($member, $accrualService);
-
-        return redirect()->route('members.show', $member)
-            ->with('status', "GHP amount for {$member->code} reverted to automatic (₱".number_format($newAmount, 2).' based on current dependents).');
+        return redirect()->route('members.show', $member)->with('status', $status);
     }
 
     /**
-     * Keeps an ALREADY-generated current period in step with the new
-     * amount. Deliberately never creates one — adjusting the GHP amount
-     * must not generate the benefit period as a side effect (that would
-     * disable the Generate button without anyone generating it). See
-     * BenefitAccrualService::refreshCurrentPeriodIfGenerated().
+     * Reverts ONE adjustment (the most recent active one) — unlike
+     * revertToAutomatic() below, which undoes the whole chain. The service
+     * decides whether it is allowed and returns a reason string if not.
      */
-    private function refreshCurrentPeriod(Member $member, BenefitAccrualService $accrualService): void
+    public function revert(Member $member, BenefitAmountAdjustment $adjustment, AmountAdjustmentService $adjustments): RedirectResponse
     {
-        if ($member->is_active && $member->deduction_start_date !== null) {
-            $member->load('dependents', 'reimbursements', 'benefitPeriods');
-            $accrualService->refreshCurrentPeriodIfGenerated($member);
+        abort_unless(auth()->user()->isAdmin(), 403);
+        // An adjustment id from another member's page must never be actionable here.
+        abort_unless($adjustment->member_id === $member->id, 404);
+
+        try {
+            $result = $adjustments->revertAdjustment($member, $adjustment, auth()->user());
+        } catch (RuntimeException $e) {
+            return redirect()->route('members.show', $member)->with('status', $e->getMessage());
         }
+
+        if (is_string($result)) {
+            return redirect()->route('members.show', $member)->with('status', $result);
+        }
+
+        $status = "GHP adjustment reverted for {$member->code}: the amount is now ₱".number_format($result->new_amount, 2).'.';
+
+        if ((float) $result->excess_covered_amount > 0) {
+            $status .= ' ₱'.number_format($result->excess_covered_amount, 2).' of excess GHP that this adjustment had covered was restored.';
+        }
+
+        return redirect()->route('members.show', $member)->with('status', $status);
+    }
+
+    public function revertToAutomatic(Member $member, AmountAdjustmentService $adjustments): RedirectResponse
+    {
+        abort_unless(auth()->user()->isAdmin(), 403);
+
+        try {
+            $result = $adjustments->revertToAutomatic($member, auth()->user());
+        } catch (RuntimeException $e) {
+            return redirect()->route('members.show', $member)->with('status', $e->getMessage());
+        }
+
+        if (is_string($result)) {
+            return redirect()->route('members.show', $member)->with('status', $result);
+        }
+
+        $status = "GHP amount for {$member->code} reverted to automatic (₱".number_format($result->new_amount, 2).' based on current dependents).';
+
+        if ((float) $result->excess_covered_amount > 0) {
+            $status .= ' ₱'.number_format($result->excess_covered_amount, 2).' of excess GHP previously covered by the adjustment(s) was restored.';
+        }
+
+        return redirect()->route('members.show', $member)->with('status', $status);
     }
 }

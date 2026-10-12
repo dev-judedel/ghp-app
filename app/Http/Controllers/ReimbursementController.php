@@ -8,32 +8,93 @@ use App\Models\Member;
 use App\Models\Reimbursement;
 use App\Services\BenefitAccrualService;
 use Carbon\Carbon;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 class ReimbursementController extends Controller
 {
+    /**
+     * A Benefit Period RECORD collects every reimbursement filed until it is Claimed
+     * (task.md §2.35). Filing goes into the cycle's open (Unclaimed) record; once that
+     * record is Claimed it is locked, and the NEXT filing opens a new record for the
+     * same cycle (BenefitAccrualService::recordForFiling()). A reimbursement that
+     * belongs to a Claimed record can't be edited, voided or un-voided — revert that
+     * record's claim first. These are the guard messages.
+     */
+    public const LOCKED_MESSAGE = 'This reimbursement belongs to a Benefit Period record that is Claimed and locked. Revert that record\'s claim first if the reimbursement needs to be edited, voided or restored.';
+
+    public const DUPLICATE_MESSAGE = 'That reimbursement was already recorded — the repeated submission was ignored, so nothing was filed twice.';
+
     public function store(StoreReimbursementRequest $request, Member $member, BenefitAccrualService $accrualService): RedirectResponse
     {
         $orDate = Carbon::parse($request->validated('or_date'));
 
-        $reimbursement = DB::transaction(function () use ($request, $member, $accrualService, $orDate) {
-            $lockedMember = $this->lockMember($member);
+        $token = $request->validated('submission_token');
 
-            // Positive Available GHP is required (no amount cap); the same
-            // figure is then used to work out the excess GHP for this claim.
-            $available = $this->assertHasAvailableBalance($accrualService, $lockedMember, $orDate);
+        try {
+            [$reimbursement, $created] = DB::transaction(function () use ($request, $member, $accrualService, $orDate, $token) {
+                $lockedMember = $this->lockMember($member);
 
-            return $lockedMember->reimbursements()->create(
-                $this->withExcess($request->validated(), $available)
-            );
-        });
+                // Duplicate submission (double click, re-sent request, resubmitted
+                // page): the form's one-time token already produced a record for
+                // this member, so return THAT one and file nothing. Checked under
+                // the member lock and BEFORE the balance check — the first filing
+                // may have used up the balance, which must not turn a harmless
+                // repeat into a confusing "no available balance" error.
+                if ($token !== null && $token !== '') {
+                    $existing = $lockedMember->reimbursements()->where('submission_token', $token)->first();
+
+                    if ($existing !== null) {
+                        return [$existing, false];
+                    }
+                }
+
+                // Positive Available GHP is required (no amount cap); the same
+                // figure is then used to work out the excess GHP for this claim.
+                $available = $this->assertHasAvailableBalance($accrualService, $lockedMember, $orDate);
+
+                // Which Benefit Period RECORD receives it: the cycle's open one (any
+                // number of reimbursements share it until it is Claimed); a NEW record
+                // for the same cycle only when every existing record is Claimed. That
+                // new record exists only because this filing needs it, and it carries
+                // the cycle's remaining balance — never a fresh annual grant. Done under
+                // the member lock (and the records are locked too), in this same
+                // transaction, so a concurrent Claim or filing can't slip past it: if the
+                // claim wins the lock first this filing opens the next record, if the
+                // filing wins first it joins the record before it is locked.
+                $record = $accrualService->recordForFiling($lockedMember, $orDate);
+
+                $data = $this->withExcess($request->validated(), $available);
+
+                if ($record !== null) {
+                    $data['benefit_period_id'] = $record->id;
+                }
+
+                return [$lockedMember->reimbursements()->create($data), true];
+            });
+        } catch (UniqueConstraintViolationException) {
+            // Backstop: the UNIQUE index on submission_token refused a second
+            // row. The transaction rolled back, so nothing partial exists.
+            return redirect()->route('members.show', $member)->with('status', self::DUPLICATE_MESSAGE);
+        }
+
+        if (! $created) {
+            return redirect()->route('members.show', $member)->with('status', self::DUPLICATE_MESSAGE);
+        }
 
         $this->refreshCurrentPeriod($member, $accrualService);
         $this->linkToBenefitPeriod($member, $reimbursement, $accrualService);
 
         $message = "Reimbursement of ₱".number_format($reimbursement->or_amount, 2)." recorded for {$member->code}.";
+
+        $record = $reimbursement->fresh()->benefitPeriod;
+
+        if ($record !== null && (int) $record->record_no > 1) {
+            $message .= " Filed into Benefit Period record #{$record->record_no} for this coverage period (the earlier record is Claimed and stays unchanged).";
+        }
 
         if ((float) $reimbursement->excess_amount > 0) {
             $message .= sprintf(
@@ -55,10 +116,20 @@ class ReimbursementController extends Controller
                 ->with('status', 'This reimbursement is voided — unvoid it first before editing.');
         }
 
+        if ($reimbursement->isLocked()) {
+            return redirect()->route('members.show', $member)->with('status', self::LOCKED_MESSAGE);
+        }
+
         $orDate = Carbon::parse($request->validated('or_date'));
 
-        DB::transaction(function () use ($request, $member, $reimbursement, $accrualService, $orDate) {
+        $locked = DB::transaction(function () use ($request, $member, $reimbursement, $accrualService, $orDate) {
             $lockedMember = $this->lockMember($member);
+
+            // Re-check the record's state under a lock: a claim may have landed
+            // since the page was loaded. A Claimed record is never changed.
+            if (Reimbursement::whereKey($reimbursement->id)->lockForUpdate()->firstOrFail()->isLocked()) {
+                return true;
+            }
 
             // Editing a claim that is already on file doesn't need a fresh
             // balance: the "positive Available GHP" requirement was met when
@@ -82,16 +153,38 @@ class ReimbursementController extends Controller
             //     later claims or balance changes must not rewrite it.
             //   - Older claim with nothing recorded: derive it once from the
             //     period's fund minus the OTHER active claims, and record it.
+            // A move into another coverage period is a NEW filing there: it goes into
+            // that cycle's open record (or opens the next one if all are Claimed).
+            // Otherwise the reimbursement stays in the record it is already in.
+            $relink = false;
+            $newRecordId = null;
+
             if ($movesToAnotherPeriod) {
                 $available = $this->assertHasAvailableBalance($accrualService, $lockedMember, $orDate);
+                $newRecord = $accrualService->recordForFiling($lockedMember, $orDate);
+                $relink = true;
+                $newRecordId = $newRecord?->id;
             } elseif ($reimbursement->available_ghp !== null) {
                 $available = (float) $reimbursement->available_ghp;
             } else {
                 $available = $this->availableExcludingClaim($accrualService, $lockedMember, $orDate, $reimbursement);
             }
 
-            $reimbursement->update($this->withExcess($request->validated(), $available, $reimbursement));
+            // The submission token only identifies a NEW filing; it is never changed on an edit.
+            $data = $this->withExcess(Arr::except($request->validated(), ['submission_token']), $available, $reimbursement);
+
+            if ($relink) {
+                $data['benefit_period_id'] = $newRecordId;
+            }
+
+            $reimbursement->update($data);
+
+            return false;
         });
+
+        if ($locked) {
+            return redirect()->route('members.show', $member)->with('status', self::LOCKED_MESSAGE);
+        }
 
         $this->refreshCurrentPeriod($member, $accrualService);
         $this->linkToBenefitPeriod($member, $reimbursement, $accrualService);
@@ -108,7 +201,33 @@ class ReimbursementController extends Controller
             return redirect()->route('members.show', $member)->with('status', 'That reimbursement is already voided.');
         }
 
-        $reimbursement->void($request->validated('reason'), $request->user());
+        // A Claimed record is finalized: it can't be voided (revert the claim
+        // first). Decided under a row lock so a concurrent claim can't slip past.
+        $outcome = DB::transaction(function () use ($request, $reimbursement) {
+            $current = Reimbursement::whereKey($reimbursement->id)->lockForUpdate()->firstOrFail();
+
+            if ($current->is_voided) {
+                return 'already';
+            }
+
+            if ($current->isLocked()) {
+                return 'locked';
+            }
+
+            $current->void($request->validated('reason'), $request->user());
+
+            return 'voided';
+        });
+
+        if ($outcome === 'locked') {
+            return redirect()->route('members.show', $member)->with('status', self::LOCKED_MESSAGE);
+        }
+
+        if ($outcome === 'already') {
+            return redirect()->route('members.show', $member)->with('status', 'That reimbursement is already voided.');
+        }
+
+        $reimbursement->refresh();
 
         $this->refreshCurrentPeriod($member, $accrualService);
 
@@ -123,6 +242,13 @@ class ReimbursementController extends Controller
 
         if (! $reimbursement->is_voided) {
             return redirect()->route('members.show', $member)->with('status', 'That reimbursement was not voided.');
+        }
+
+        // Un-voiding puts it back against the GHP fund, which would change the
+        // figures of a Claimed (finalized) record — so it's refused until that
+        // record's claim is reverted.
+        if ($reimbursement->isClaimed()) {
+            return redirect()->route('members.show', $member)->with('status', self::LOCKED_MESSAGE);
         }
 
         $reimbursement->unvoid();
@@ -269,36 +395,37 @@ class ReimbursementController extends Controller
     }
 
     /**
-     * Sets reimbursements.benefit_period_id to the BenefitPeriod row whose
-     * coverage range (the member's configured cycle, or the standard
-     * Employees Apr–Mar / Agents Jun–May one — see
-     * BenefitAccrualService::coveragePeriod()) contains this
-     * reimbursement's OR date. This is the reliable ID link the Coverage
-     * Year History drill-down (BenefitPeriodController::reimbursements())
-     * filters on, instead of re-matching dates on every request.
+     * Keeps reimbursements.benefit_period_id pointing at the Benefit Period RECORD
+     * the reimbursement belongs to (task.md §2.35). A reimbursement is linked to its
+     * record when it is filed (BenefitAccrualService::recordForFiling()) and STAYS
+     * in that record — editing it, or filing another one, never moves it. With
+     * several records per coverage period, "the period that contains the OR date"
+     * no longer identifies one row, so this never re-matches by dates once linked.
      *
-     * Only links to a period that already exists — refreshCurrentPeriod()
-     * above just created/updated the CURRENT one, so filing or editing a
-     * reimbursement for the current coverage year always links
-     * successfully. A reimbursement backdated into a past coverage year
-     * that has no BenefitPeriod row yet (rare — periods are normally
-     * generated automatically as each year rolls in) is left unlinked
-     * rather than fabricating a historical period as a side effect of
-     * filing a receipt; it still shows up everywhere it already did, just
-     * not from the Coverage Year History drill-down until that period
-     * exists.
+     * What remains is the legacy case: a reimbursement with no record yet (filed
+     * before the link existed, or backdated into a cycle that had none) is linked to
+     * the cycle's OPEN record if one exists. It is never linked into a Claimed
+     * record (that would change a locked record) and no record is created here.
      */
     private function linkToBenefitPeriod(Member $member, Reimbursement $reimbursement, BenefitAccrualService $accrualService): void
     {
         [$from, $to] = $accrualService->coveragePeriod($member, $reimbursement->or_date);
 
-        $period = $member->benefitPeriods()
+        $current = $reimbursement->fresh()->benefitPeriod;
+
+        if ($current !== null && $current->from_date->isSameDay($from) && $current->to_date->isSameDay($to)) {
+            return;
+        }
+
+        $open = $member->benefitPeriods()
             ->whereDate('from_date', $from->toDateString())
             ->whereDate('to_date', $to->toDateString())
+            ->whereNull('claimed_at')
+            ->orderByDesc('record_no')
             ->first();
 
-        if ($period && $reimbursement->benefit_period_id !== $period->id) {
-            $reimbursement->update(['benefit_period_id' => $period->id]);
+        if ($open && $reimbursement->benefit_period_id !== $open->id) {
+            $reimbursement->update(['benefit_period_id' => $open->id]);
         }
     }
 }

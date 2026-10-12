@@ -395,9 +395,13 @@ class BenefitAccrualService
 
         $ghpAmount = $this->resolveGhpAmount($member, $asOf);
 
-        $priorPeriod = $member->benefitPeriods()
-            ->whereDate('to_date', $from->copy()->subDay())
-            ->first();
+        // The prior cycle may now hold several benefit period RECORDS (task.md §2.35):
+        // "entirely unused" has to be judged across all of them, never from whichever
+        // single row a query happens to return first, or a cycle whose usage sits in
+        // a later record would wrongly qualify for the carry-forward.
+        $priorPeriod = BenefitPeriod::summarizeCycle(
+            $member->benefitPeriods()->whereDate('to_date', $from->copy()->subDay())->get()
+        );
 
         $carryForward = $this->carryForward($priorPeriod);
 
@@ -477,39 +481,153 @@ class BenefitAccrualService
     }
 
     /**
-     * Calculates and persists (or updates) the BenefitPeriod for a member's
-     * current coverage year. Idempotent — safe to re-run.
+     * Calculates and persists the BenefitPeriod RECORD for a member's coverage
+     * year. Idempotent — safe to re-run.
+     *
+     * A coverage cycle can hold several records (task.md §2.35). This method:
+     *
+     *  - creates record 1 when the cycle has no record yet (that is what "Generate
+     *    benefit period" and the daily job are);
+     *  - otherwise refreshes ONLY the cycle's open (Unclaimed) record. A Claimed
+     *    record is finalized: its stored figures are never touched again, so
+     *    filing, an adjustment or a dependent change can't rewrite history;
+     *  - NEVER creates record 2, 3 ...: those are created only at the moment a
+     *    reimbursement is actually filed (recordForFiling()), never as a side
+     *    effect of a refresh. When every record is Claimed it changes nothing and
+     *    returns the latest one.
+     *
+     * NO DOUBLE ENTITLEMENT. calculate() works on the CYCLE (the member's amount,
+     * the months accrued and every reimbursement by OR date), so the cycle's fund
+     * and Available are computed exactly once however many records exist. The open
+     * record stores:
+     *   ghp_amount     the cycle's entitlement (the same figure on every record)
+     *   ghp_used       the cycle's used MINUS what the earlier (claimed) records
+     *                  already hold — its own share, so the shares add up to the
+     *                  cycle's used and nothing is counted twice
+     *   ghp_available  the cycle's remaining balance after every record
+     * With a single record there is nothing to subtract, so the stored figures are
+     * exactly what they have always been.
      */
     public function accrue(Member $member, ?CarbonInterface $asOf = null): BenefitPeriod
     {
         $result = $this->calculate($member, $asOf);
 
-        return BenefitPeriod::updateOrCreate(
-            [
-                'member_id' => $member->id,
-                // Match on date-only strings, not the raw Carbon instances.
-                // to_date is a DATE column, but coveragePeriod() builds $to
-                // with ->endOfDay() (time = 23:59:59) for accurate "as of"
-                // comparisons elsewhere (see countAccruedMonths()). Passing
-                // that raw value here made updateOrCreate()'s lookup compare
-                // '...23:59:59' against MySQL's midnight-padded DATE value,
-                // never match, then hit the unique constraint on insert.
-                'from_date' => $result['from']->toDateString(),
-                'to_date' => $result['to']->toDateString(),
-            ],
-            [
-                // Labels the record with the coverage year its cycle began in
-                // (a configured cycle can start in any month, so this is
-                // stored rather than assumed from the member type).
-                'coverage_year' => $result['from']->year,
-                'ghp_amount' => $result['ghp_amount'],
-                'ghp_available' => $result['available'],
+        // Match on date-only strings, not the raw Carbon instances.
+        // to_date is a DATE column, but coveragePeriod() builds $to
+        // with ->endOfDay() (time = 23:59:59) for accurate "as of"
+        // comparisons elsewhere (see countAccruedMonths()). Comparing that raw
+        // value against MySQL's midnight-padded DATE never matched.
+        $fromDate = $result['from']->toDateString();
+        $toDate = $result['to']->toDateString();
+
+        $records = BenefitPeriod::query()
+            ->where('member_id', $member->id)
+            ->whereDate('from_date', $fromDate)
+            ->whereDate('to_date', $toDate)
+            ->orderBy('record_no')
+            ->orderBy('id')
+            ->get();
+
+        if ($records->isEmpty()) {
+            return BenefitPeriod::create($this->recordAttributes($member, $result) + [
+                'from_date' => $fromDate,
+                'to_date' => $toDate,
+                'record_no' => 1,
                 'ghp_used' => $result['used'],
-                'member_type' => $member->member_type,
-                'division_id' => $member->division_id,
-                'department_id' => $member->department_id,
-            ]
-        );
+                'ghp_available' => $result['available'],
+            ]);
+        }
+
+        $open = $records->last(fn (BenefitPeriod $record) => ! $record->isClaimed());
+
+        if ($open === null) {
+            // Every record is Claimed (finalized): nothing to refresh, nothing to create.
+            return $records->last();
+        }
+
+        $earlierUsed = (float) $records->where('id', '!=', $open->id)->sum('ghp_used');
+
+        $open->fill($this->recordAttributes($member, $result) + [
+            'ghp_used' => max(round($result['used'] - $earlierUsed, 2), 0.0),
+            'ghp_available' => $result['available'],
+        ])->save();
+
+        return $open;
+    }
+
+    /** Columns every record carries the same way (the entitlement and the labels). */
+    private function recordAttributes(Member $member, array $result): array
+    {
+        return [
+            'member_id' => $member->id,
+            // Labels the record with the coverage year its cycle began in
+            // (a configured cycle can start in any month, so this is
+            // stored rather than assumed from the member type).
+            'coverage_year' => $result['from']->year,
+            'ghp_amount' => $result['ghp_amount'],
+            'member_type' => $member->member_type,
+            'division_id' => $member->division_id,
+            'department_id' => $member->department_id,
+        ];
+    }
+
+    /**
+     * The Benefit Period record a reimbursement with this OR date is filed INTO
+     * (task.md §2.35). Call it inside the filing transaction with the member row
+     * already locked: the member lock serializes every filing, claim and revert
+     * for that member, and the records are locked here too.
+     *
+     *  - an OPEN (Unclaimed) record exists for the cycle -> that one: any number
+     *    of reimbursements go into the same record until it is claimed;
+     *  - the cycle has records but ALL are Claimed -> a NEW record for the same
+     *    cycle is created now (record_no + 1, same dates and coverage year).
+     *    It exists only because a reimbursement is being filed right now: it is
+     *    never created empty, in advance, or by a refresh;
+     *  - the cycle has no record yet -> the current cycle gets its first record
+     *    (what Generate would have made); a past cycle gets none (returns null,
+     *    the reimbursement stays unlinked rather than fabricating history).
+     *
+     * The new record's entitlement is the cycle's, never a fresh annual grant:
+     * its Available is the cycle's remaining balance (earlier records' usage is
+     * already in it) and its Used starts at 0 until the reimbursement is counted.
+     */
+    public function recordForFiling(Member $member, CarbonInterface $orDate): ?BenefitPeriod
+    {
+        [$from, $to] = $this->coveragePeriod($member, $orDate);
+
+        $records = BenefitPeriod::query()
+            ->where('member_id', $member->id)
+            ->whereDate('from_date', $from->toDateString())
+            ->whereDate('to_date', $to->toDateString())
+            ->orderBy('record_no')
+            ->orderBy('id')
+            ->lockForUpdate()
+            ->get();
+
+        $now = Carbon::now();
+
+        if ($records->isEmpty()) {
+            [$currentFrom] = $this->coveragePeriod($member, $now);
+
+            return $from->isSameDay($currentFrom) ? $this->accrue($member, $now) : null;
+        }
+
+        $open = $records->last(fn (BenefitPeriod $record) => ! $record->isClaimed());
+
+        if ($open !== null) {
+            return $open;
+        }
+
+        $asOf = $now->lessThan($to) ? $now : $to->copy();
+        $result = $this->calculate($member, $asOf);
+
+        return BenefitPeriod::create($this->recordAttributes($member, $result) + [
+            'from_date' => $from->toDateString(),
+            'to_date' => $to->toDateString(),
+            'record_no' => $records->last()->record_no + 1,
+            'ghp_used' => 0,
+            'ghp_available' => $result['available'],
+        ]);
     }
 
     /**
@@ -539,6 +657,28 @@ class BenefitAccrualService
     }
 
     /**
+     * The actual INCREASE in a period's fund caused by moving its STORED
+     * ghp_amount to member.ghp_amount's CURRENT value — same months
+     * rendered, priced at the new rate instead of the period's stored one
+     * (e.g. 3 x 350 - 3 x 300 = 150). This is the one formula for "what did
+     * this change actually add to the fund", shared by a dependent-driven
+     * refresh (refreshCurrentPeriodIfAmountChanged(), new rate =
+     * resolveGhpAmount()) and a GHP amount adjustment
+     * (AmountAdjustmentService::apply(), new rate = the admin-typed
+     * override) — deliberately NOT new_amount - old_amount, which would be
+     * the whole year's difference regardless of how many months are left
+     * to accrue it over.
+     */
+    public function fundIncrease(Member $member, BenefitPeriod $period, CarbonInterface $asOf): float
+    {
+        $after = $this->calculate($member, $asOf);
+        $fundBefore = round(((float) $period->ghp_amount / 12) * $after['months_accrued'], 2) + (float) $after['carry_forward'];
+        $fundAfter = (float) $after['accrued'] + (float) $after['carry_forward'];
+
+        return round($fundAfter - $fundBefore, 2);
+    }
+
+    /**
      * Brings the current cycle's ALREADY-GENERATED BenefitPeriod in line
      * with dependent eligibility, but only when eligibility has actually
      * changed the GHP amount (stored period amount != what resolveGhpAmount()
@@ -560,20 +700,43 @@ class BenefitAccrualService
      * amount, so they never trigger this. A hand-corrected period whose
      * amount already matches is likewise left untouched.
      *
+     * $source: forwarded to applyFundIncreaseToExcess() — pass the
+     * BenefitAmountAdjustment this refresh is being done FOR when the
+     * caller is AmountAdjustmentService::apply(), so each claim's covered
+     * share is written to the excess_coverages ledger and can later be
+     * reverted by exactly that adjustment. Every other caller (the
+     * dependent-eligibility flow) leaves this null, unchanged from before —
+     * a dependent-driven increase is not individually revertible the same
+     * way, so it is applied straight to reimbursements.excess_covered_amount
+     * with no ledger row, exactly as it always has been.
+     *
      * @return BenefitPeriod|null the refreshed period, or null if nothing needed changing
      */
-    public function refreshCurrentPeriodIfAmountChanged(Member $member, ?CarbonInterface $asOf = null): ?BenefitPeriod
+    public function refreshCurrentPeriodIfAmountChanged(Member $member, ?CarbonInterface $asOf = null, ?\App\Models\BenefitAmountAdjustment $source = null): ?BenefitPeriod
     {
         $asOf = $asOf ?? Carbon::now();
 
         [$from, $to] = $this->coveragePeriod($member, $asOf);
 
+        // The cycle's OPEN record (the highest-numbered Unclaimed one), else its latest
+        // claimed one. A claimed record is frozen at its old amount, so comparing
+        // against it would report a "change" forever; the open record is refreshed
+        // by accrue() and therefore always carries the amount last applied.
         $period = $member->benefitPeriods()
             ->whereDate('from_date', $from->toDateString())
             ->whereDate('to_date', $to->toDateString())
+            ->orderByRaw('CASE WHEN claimed_at IS NULL THEN 0 ELSE 1 END')
+            ->orderByDesc('record_no')
             ->first();
 
         if ($period === null) {
+            return null;
+        }
+
+        // Every record of the cycle is Claimed (finalized): accrue() would change nothing, and
+        // comparing against a frozen amount would report a "change" on every call. The next
+        // reimbursement opens a new record from the cycle's current balance (recordForFiling()).
+        if ($period->isClaimed()) {
             return null;
         }
 
@@ -588,21 +751,13 @@ class BenefitAccrualService
             return null;
         }
 
-        // The INCREASE is the actual growth of the fund caused by this change
-        // — the same months rendered, priced at the new GHP amount instead of
-        // the period's stored one (e.g. 3 x 350 - 3 x 300 = 150) — NOT the whole
-        // recalculated balance, and not the ordinary monthly accrual that may
-        // have happened since the period was last refreshed.
-        $after = $this->calculate($member, $asOf);
-        $fundBefore = round(((float) $period->ghp_amount / 12) * $after['months_accrued'], 2) + (float) $after['carry_forward'];
-        $fundAfter = (float) $after['accrued'] + (float) $after['carry_forward'];
-        $increase = round($fundAfter - $fundBefore, 2);
-
         // Runs only when the amount really changed (guard above), so the same
         // increase can never be applied twice: the next call finds the amounts
         // already equal and returns before reaching this point.
+        $increase = $this->fundIncrease($member, $period, $asOf);
+
         if ($increase > 0) {
-            $this->applyFundIncreaseToExcess($member, $after['from'], $after['to'], $increase);
+            $this->applyFundIncreaseToExcess($member, $from, $to, $increase, $source);
         }
 
         return $this->accrue($member, $asOf);
@@ -622,8 +777,14 @@ class BenefitAccrualService
      *
      * Call inside a transaction (recalculateBenefit() does). Returns the
      * amount applied.
+     *
+     * $source: when the increase comes from a GHP amount ADJUSTMENT (not a
+     * dependent), pass it so each claim's share is also written to the
+     * excess_coverages ledger. That ledger is what lets the adjustment be
+     * reversed later by exactly what it covered. The calculation itself is the
+     * same for both sources — there is deliberately one implementation.
      */
-    public function applyFundIncreaseToExcess(Member $member, CarbonInterface $from, CarbonInterface $to, float $increase): float
+    public function applyFundIncreaseToExcess(Member $member, CarbonInterface $from, CarbonInterface $to, float $increase, ?\App\Models\BenefitAmountAdjustment $source = null): float
     {
         $left = round($increase, 2);
         $applied = 0.0;
@@ -632,8 +793,14 @@ class BenefitAccrualService
             return 0.0;
         }
 
+        // CLAIMED records are finalized and LOCKED (task.md §2.32): their excess is
+        // never covered by a later GHP increase — neither a GHP amount adjustment
+        // nor a dependent becoming eligible, because both come through here. Only
+        // Filed / Reverted records are eligible. A reverted record is eligible again
+        // for FUTURE increases only; nothing is re-covered retroactively.
         $claims = $member->reimbursements()
             ->notVoided()
+            ->unclaimed()
             ->whereBetween('or_date', [$from, $to])
             ->where('excess_amount', '>', 0)
             ->orderBy('or_date')
@@ -655,6 +822,15 @@ class BenefitAccrualService
                 'excess_covered_amount' => round((float) $claim->excess_covered_amount + $apply, 2),
                 'excess_amount' => round($remaining - $apply, 2),
             ]);
+
+            if ($source !== null && $apply > 0) {
+                \App\Models\ExcessCoverage::create([
+                    'member_id' => $member->id,
+                    'reimbursement_id' => $claim->id,
+                    'benefit_amount_adjustment_id' => $source->id,
+                    'amount' => $apply,
+                ]);
+            }
 
             $left = round($left - $apply, 2);
             $applied = round($applied + $apply, 2);

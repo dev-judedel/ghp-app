@@ -442,6 +442,45 @@
         </dialog>
     @endif
 
+    {{-- "Generation Not Proceeded" notice for the all-or-nothing bulk Generate
+         action. Opened either by the pre-check in submitBulk() (before any
+         confirmation) or, if a request got past it, from the server's own
+         rejection (session 'bulk_generation_report'). Lists are filled by JS
+         with textContent — see showBulkGenerationBlocked(). --}}
+    @if (auth()->user()->isAdmin())
+        <dialog id="bulkGenerationBlockedModal" class="modal" style="max-width: 560px;">
+            <div class="modal-head">
+                <h2>Generation Not Proceeded</h2>
+                <button type="button" class="modal-close" onclick="bulkGenerationBlockedModal.close()" aria-label="Close">&times;</button>
+            </div>
+
+            <div class="modal-body">
+                <p style="margin-top: 0;">
+                    The selected members were not processed because one or more of them cannot be
+                    generated. <strong>No Benefit Periods were created for any selected member.</strong>
+                </p>
+
+                <div id="bulk_gen_existing_section" style="display: none;">
+                    <p style="margin-bottom: 4px; font-weight: 600;">Already have a generated Benefit Period:</p>
+                    <ul id="bulk_gen_existing_list" style="margin: 0 0 12px; padding-left: 18px; font-size: 13px;"></ul>
+                </div>
+
+                <div id="bulk_gen_ineligible_section" style="display: none;">
+                    <p style="margin-bottom: 4px; font-weight: 600;">Not eligible for generation:</p>
+                    <ul id="bulk_gen_ineligible_list" style="margin: 0 0 12px; padding-left: 18px; font-size: 13px;"></ul>
+                </div>
+
+                <p class="hint" style="margin-bottom: 0;">
+                    Please remove these members from the selection and try again.
+                </p>
+            </div>
+
+            <div class="modal-foot">
+                <button type="button" class="btn btn-primary" onclick="bulkGenerationBlockedModal.close()">OK</button>
+            </div>
+        </dialog>
+    @endif
+
     <div class="card" id="members-results">
         @include('members._results')
     </div>
@@ -458,18 +497,57 @@
                 document.getElementById('selected-count').textContent = checked;
             }
 
-            function submitBulk(action) {
-                const checked = document.querySelectorAll('.member-checkbox:checked').length;
+            const bulkGenerateCheckUrl = '{{ route('members.bulk-action.check-generate') }}';
+
+            async function submitBulk(action) {
+                const selected = Array.from(document.querySelectorAll('.member-checkbox:checked')).map(cb => cb.value);
+                const checked = selected.length;
 
                 if (checked === 0) {
-                    alert('Select at least one member first.');
+                    alert(action === 'generate_benefit_period'
+                        ? 'No Members Selected\n\nPlease select at least one member before generating a Benefit Period.'
+                        : 'Select at least one member first.');
                     return;
+                }
+
+                // Bulk generation is all-or-nothing. Ask the server FIRST whether any
+                // selected member already has this cycle's period (or is ineligible),
+                // and if so show the notice instead of a confirmation. This is a
+                // convenience only: the server repeats the check when the form is
+                // submitted, so a failed/skipped pre-check can never cause a
+                // partial or duplicate generation.
+                if (action === 'generate_benefit_period') {
+                    let report = null;
+
+                    try {
+                        const response = await fetch(bulkGenerateCheckUrl, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Accept': 'application/json',
+                                'X-CSRF-TOKEN': '{{ csrf_token() }}',
+                                'X-Requested-With': 'XMLHttpRequest',
+                            },
+                            body: JSON.stringify({ member_ids: selected }),
+                        });
+
+                        if (response.ok) {
+                            report = await response.json();
+                        }
+                    } catch (e) {
+                        report = null;
+                    }
+
+                    if (report && ! report.ok) {
+                        showBulkGenerationBlocked(report);
+                        return;
+                    }
                 }
 
                 const labels = {
                     activate: `Activate ${checked} member(s)?`,
                     deactivate: `Deactivate ${checked} member(s)? They won't be able to have benefit periods generated while inactive.`,
-                    generate_benefit_period: `Generate this year's benefit period for ${checked} member(s)? Inactive members will be skipped.`,
+                    generate_benefit_period: `Generate this year's benefit period for ${checked} member(s)? If any selected member already has one, nothing will be generated.`,
                 };
 
                 if (! confirm(labels[action])) {
@@ -478,6 +556,31 @@
 
                 document.getElementById('bulk_action').value = action;
                 document.getElementById('bulk-form').submit();
+            }
+
+            /**
+             * Fills and opens the "Generation Not Proceeded" notice. Names come from
+             * the server and are inserted with textContent, never as HTML.
+             */
+            function showBulkGenerationBlocked(report) {
+                const fill = (sectionId, listId, rows, describe) => {
+                    const section = document.getElementById(sectionId);
+                    const list = document.getElementById(listId);
+                    list.innerHTML = '';
+                    rows.forEach((row) => {
+                        const li = document.createElement('li');
+                        li.textContent = describe(row);
+                        list.appendChild(li);
+                    });
+                    section.style.display = rows.length ? 'block' : 'none';
+                };
+
+                fill('bulk_gen_existing_section', 'bulk_gen_existing_list', report.existing || [],
+                    (r) => `${r.name} (${r.code}) \u2014 Coverage Year ${r.coverage_year} (${r.period})`);
+                fill('bulk_gen_ineligible_section', 'bulk_gen_ineligible_list', report.ineligible || [],
+                    (r) => `${r.name} (${r.code}) \u2014 ${r.reason}`);
+
+                bulkGenerationBlockedModal.showModal();
             }
 
             const memberStatusUrlBase = '{{ url('members') }}';
@@ -742,6 +845,10 @@
                 addMemberModal.showModal();
             @else
                 showAddMemberTab('single');
+            @endif
+
+            @if (session('bulk_generation_report'))
+                showBulkGenerationBlocked(@json(session('bulk_generation_report')));
             @endif
         </script>
     @endif

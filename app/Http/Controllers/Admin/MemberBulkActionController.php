@@ -4,15 +4,16 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\Member;
-use App\Services\BenefitAccrualService;
+use App\Services\BulkBenefitPeriodGenerator;
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class MemberBulkActionController extends Controller
 {
-    public function store(Request $request, BenefitAccrualService $accrualService): RedirectResponse
+    public function store(Request $request, BulkBenefitPeriodGenerator $generator): RedirectResponse
     {
         $validated = $request->validate([
             'member_ids' => ['required', 'array', 'min:1'],
@@ -25,17 +26,61 @@ class MemberBulkActionController extends Controller
             'bulk_action' => ['required', 'in:activate,deactivate,generate_benefit_period'],
         ]);
 
+        $redirect = redirect()->route('members.index', $request->only(['search', 'type']));
+
+        // Bulk generation is ALL OR NOTHING (task.md §2.27) and has its own
+        // result shape (a notice listing the affected members), so it is
+        // handled apart from the simple activate/deactivate flash message.
+        if ($validated['bulk_action'] === 'generate_benefit_period') {
+            return $this->flashGeneration($redirect, $generator->generate($validated['member_ids']));
+        }
+
         $members = Member::whereIn('id', $validated['member_ids'])->get();
 
         $message = match ($validated['bulk_action']) {
             'activate' => $this->setActive($members, true),
             'deactivate' => $this->setActive($members, false),
-            'generate_benefit_period' => $this->generateBenefitPeriods($members, $accrualService),
         };
 
-        return redirect()
-            ->route('members.index', $request->only(['search', 'type']))
-            ->with('status', $message);
+        return $redirect->with('status', $message);
+    }
+
+    /**
+     * Read-only pre-check behind the bulk Generate button: tells the page
+     * whether the selected batch would be rejected, BEFORE any confirmation is
+     * shown. It writes nothing and is purely a convenience — store() repeats
+     * the whole check on the server, so skipping or faking this call gains
+     * nobody anything.
+     */
+    public function checkGenerate(Request $request, BulkBenefitPeriodGenerator $generator): JsonResponse
+    {
+        $validated = $request->validate([
+            'member_ids' => ['required', 'array', 'min:1'],
+            'member_ids.*' => ['integer', 'exists:members,id'],
+        ]);
+
+        $report = $generator->inspect($validated['member_ids']);
+
+        return response()->json([
+            'ok' => $report['existing'] === [] && $report['ineligible'] === [],
+            'existing' => $report['existing'],
+            'ineligible' => $report['ineligible'],
+        ]);
+    }
+
+    private function flashGeneration(RedirectResponse $redirect, array $result): RedirectResponse
+    {
+        return match ($result['status']) {
+            'generated' => $redirect->with(
+                'status',
+                "Benefit Period Generated Successfully — Benefit Periods were successfully generated for {$result['count']} selected member(s)."
+            ),
+            'blocked' => $redirect->with('bulk_generation_report', [
+                'existing' => $result['existing'],
+                'ineligible' => $result['ineligible'],
+            ]),
+            default => $redirect->with('status', 'Generation Not Proceeded — '.$result['message']),
+        };
     }
 
     private function setActive(Collection $members, bool $active): string
@@ -52,44 +97,5 @@ class MemberBulkActionController extends Controller
         $label = $active ? 'activated' : 'deactivated';
 
         return "{$count} member(s) {$label}.";
-    }
-
-    private function generateBenefitPeriods(Collection $members, BenefitAccrualService $accrualService): string
-    {
-        $created = 0;
-        $skippedInactive = 0;
-        $skippedNoDedStart = 0;
-
-        DB::transaction(function () use ($members, $accrualService, &$created, &$skippedInactive, &$skippedNoDedStart) {
-            foreach ($members as $member) {
-                if (! $member->is_active) {
-                    $skippedInactive++;
-
-                    continue;
-                }
-
-                if ($member->deduction_start_date === null) {
-                    $skippedNoDedStart++;
-
-                    continue;
-                }
-
-                $member->loadMissing('dependents', 'reimbursements', 'benefitPeriods');
-                $accrualService->accrue($member);
-                $created++;
-            }
-        });
-
-        $message = "Generated/updated this year's benefit period for {$created} member(s).";
-
-        if ($skippedInactive > 0) {
-            $message .= " Skipped {$skippedInactive} inactive.";
-        }
-
-        if ($skippedNoDedStart > 0) {
-            $message .= " Skipped {$skippedNoDedStart} with no deduction start date.";
-        }
-
-        return $message;
     }
 }

@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Requests\StoreMemberRequest;
 use App\Http\Requests\UpdateMemberRequest;
 use App\Http\Requests\UpdateMemberStatusRequest;
+use App\Models\BenefitPeriod;
 use App\Models\Department;
 use App\Models\Division;
 use App\Models\Member;
@@ -110,12 +111,23 @@ class MemberController extends Controller
             'division',
             'department',
             'dependents',
-            'benefitPeriods' => fn ($q) => $q->orderByDesc('from_date'),
-            'reimbursements' => fn ($q) => $q->orderByDesc('or_date')->limit(20),
+            // Newest cycle first; the records of one cycle in record order (task.md §2.35).
+            // Each record carries its own reimbursements (the Coverage Year History groups them by record).
+            'benefitPeriods' => fn ($q) => $q->orderByDesc('from_date')->orderBy('record_no')->orderBy('id')
+                ->with(['reimbursements' => fn ($r) => $r->orderBy('or_date')->orderBy('id'), 'claimedBy', 'revertedBy']),
+            'reimbursements' => fn ($q) => $q->orderByDesc('or_date')->limit(20)->with('excessCoverages'),
             'amountAdjustments' => fn ($q) => $q->orderByDesc('requested_at'),
         ]);
 
-        $currentBenefitPeriod = $member->benefitPeriods->first();
+        // The Benefit balance card shows the latest cycle's ONE set of figures: a cycle can
+        // hold several records (task.md §2.35), so summarizeCycle() counts the entitlement
+        // once, sums Used across the records and takes Available from the last one.
+        $latestRecord = $member->benefitPeriods->first();
+        $currentBenefitPeriod = $latestRecord === null ? null : BenefitPeriod::summarizeCycle(
+            $member->benefitPeriods->filter(
+                fn (BenefitPeriod $p) => $p->from_date->isSameDay($latestRecord->from_date) && $p->to_date->isSameDay($latestRecord->to_date)
+            )
+        );
 
         [$currentCycleStart, $currentCycleEnd] = $accrualService->coveragePeriod($member, now());
 

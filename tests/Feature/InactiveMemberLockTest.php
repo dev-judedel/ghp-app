@@ -92,7 +92,7 @@ class InactiveMemberLockTest extends TestCase
             'deduction_start_date' => optional($member->deduction_start_date)->toDateString(),
             'dependents' => $member->dependents()->orderBy('id')->get(['id', 'name', 'relation', 'birthdate', 'eligibility_date', 'immediate_eligibility_at'])->toArray(),
             'reimbursements' => $member->reimbursements()->withTrashed()->orderBy('id')->get(['id', 'or_no', 'or_date', 'or_amount', 'is_voided', 'excess_amount', 'available_ghp', 'benefit_period_id'])->toArray(),
-            'periods' => $member->benefitPeriods()->orderBy('id')->get(['id', 'from_date', 'to_date', 'ghp_amount', 'ghp_used', 'ghp_available'])->toArray(),
+            'periods' => $member->benefitPeriods()->orderBy('id')->get(['id', 'record_no', 'from_date', 'to_date', 'ghp_amount', 'ghp_used', 'ghp_available', 'claimed_at', 'reverted_at'])->toArray(),
             'adjustments' => $member->amountAdjustments()->count(),
         ];
     }
@@ -112,6 +112,10 @@ class InactiveMemberLockTest extends TestCase
             ['put', route('members.reimbursements.update', [$member, $claim]), ['or_date' => '2026-05-10', 'or_amount' => 999]],
             ['post', route('members.reimbursements.void', [$member, $claim]), ['reason' => 'should not work']],
             ['post', route('members.reimbursements.unvoid', [$member, $voided]), []],
+            // Claim | Revert act on ONE Benefit Period RECORD, by its own id (task.md §2.35) —
+            // a deactivated member's records can be neither claimed nor reverted.
+            ['post', route('members.benefit-periods.claim', [$member, $period]), []],
+            ['post', route('members.benefit-periods.revert', [$member, $period]), []],
             ['post', route('members.dependents.store', $member), ['name' => 'New Kid', 'relation' => 'Son', 'birthdate' => '2015-01-01']],
             ['put', route('members.dependents.update', [$member, $dependent]), ['name' => 'Renamed', 'relation' => 'Spouse', 'birthdate' => '1990-01-01']],
             ['delete', route('members.dependents.destroy', [$member, $dependent]), []],
