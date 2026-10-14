@@ -115,8 +115,12 @@ class MemberCsvImportService
 
         $unknownColumns = array_values(array_diff($header, self::TEMPLATE_HEADERS));
 
-        $divisionsByName = Division::all()->keyBy(fn ($division) => strtolower($division->name));
-        $departmentsByName = Department::all()->keyBy(fn ($department) => strtolower($department->name));
+        // Division / Department names are not unique (task.md §2.36). A CSV cell holds a NAME,
+        // so when several records share it the LOWEST id wins (deterministic, never the
+        // arbitrary last one); the admin can still pick a specific duplicate on the Add /
+        // Edit member form, which submits ids.
+        $divisionsByName = Division::orderBy('id')->get()->unique(fn ($division) => strtolower($division->name))->keyBy(fn ($division) => strtolower($division->name));
+        $departmentsByName = Department::orderBy('id')->get()->unique(fn ($department) => strtolower($department->name))->keyBy(fn ($department) => strtolower($department->name));
 
         $created = 0;
         $skipped = [];

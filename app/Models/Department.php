@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -14,6 +15,16 @@ use Spatie\Activitylog\Traits\LogsActivity;
 class Department extends Model
 {
     use HasFactory, LogsActivity;
+
+    /**
+     * Dropdown label. Names are NOT unique (task.md §2.36) — records are told
+     * apart by id — so App\Support\OptionLabels adds " #id" to a name that
+     * repeats. Without that, this is just the name.
+     */
+    protected function optionLabel(): Attribute
+    {
+        return Attribute::make(get: fn ($value) => $value ?? $this->name);
+    }
 
     public function members(): HasMany
     {

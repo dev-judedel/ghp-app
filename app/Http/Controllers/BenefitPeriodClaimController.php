@@ -42,13 +42,15 @@ use Illuminate\Support\Facades\DB;
  */
 class BenefitPeriodClaimController extends Controller
 {
+    public const NOT_LATEST_RECORD = 'A newer Benefit Period record exists for this coverage period, so this record is closed and cannot be claimed or reverted.';
+
     public const NOTHING_TO_CLAIM = 'This Benefit Period record has no active reimbursement, so there is nothing to claim yet. Claim it after a reimbursement has been filed into it.';
 
     public const NOTHING_TO_REVERT = 'This Benefit Period record has not been claimed, so there is nothing to revert.';
 
     public const ALREADY_REVERTED = 'No further revert is available for this Benefit Period record.';
 
-    public const LATER_RECORD_EXISTS = 'A later Benefit Period record exists for this coverage period. Revert the later record first — only the most recent record can be reverted, so a coverage period never has two open records.';
+    public const LATER_RECORD_EXISTS = self::NOT_LATEST_RECORD;
 
     public function claim(Request $request, Member $member, BenefitPeriod $benefitPeriod): RedirectResponse
     {
@@ -57,6 +59,15 @@ class BenefitPeriodClaimController extends Controller
         $outcome = DB::transaction(function () use ($request, $member, $benefitPeriod) {
             Member::whereKey($member->id)->lockForUpdate()->firstOrFail();
             $record = BenefitPeriod::whereKey($benefitPeriod->id)->lockForUpdate()->firstOrFail();
+
+            // Only the cycle's NEWEST record takes actions (task.md §2.37). An older record
+            // is history once a newer one exists for the same member and coverage period, and
+            // stays closed even if that newer record is later reverted — so this is checked
+            // FIRST, and the message says why. The page hides the buttons for the same
+            // reason; this is the real enforcement.
+            if ($record->hasLaterRecord()) {
+                return 'later';
+            }
 
             if ($record->isClaimed()) {
                 return 'already';
@@ -94,6 +105,7 @@ class BenefitPeriodClaimController extends Controller
         return redirect()->route('members.show', $member)->with('status', match ($outcome) {
             'ok' => "{$label} marked as Claimed. It is now locked; the next reimbursement filed for this coverage period opens a new record.",
             'empty' => "{$label}: ".self::NOTHING_TO_CLAIM,
+            'later' => "{$label}: ".self::NOT_LATEST_RECORD,
             default => "{$label} is already Claimed — nothing was changed.",
         });
     }
@@ -110,12 +122,16 @@ class BenefitPeriodClaimController extends Controller
             $lockedMember = Member::whereKey($member->id)->lockForUpdate()->firstOrFail();
             $record = BenefitPeriod::whereKey($benefitPeriod->id)->lockForUpdate()->firstOrFail();
 
-            if (! $record->isClaimed()) {
-                return $record->isReverted() ? self::ALREADY_REVERTED : self::NOTHING_TO_REVERT;
+            // Same rule as Claim: an older record (a newer one exists for this member and
+            // coverage period) is closed, so Revert is refused with the reason, whatever
+            // its own status. A reverted older record can't re-open next to the newer one —
+            // that would leave two Unclaimed records competing for new filings.
+            if ($record->hasLaterRecord()) {
+                return self::NOT_LATEST_RECORD;
             }
 
-            if ($record->hasLaterRecord()) {
-                return self::LATER_RECORD_EXISTS;
+            if (! $record->isClaimed()) {
+                return $record->isReverted() ? self::ALREADY_REVERTED : self::NOTHING_TO_REVERT;
             }
 
             $by = $request->user();

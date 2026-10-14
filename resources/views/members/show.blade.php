@@ -349,6 +349,10 @@
                             </td>
                             @if (auth()->user()->isAdmin())
                                 <td style="white-space: nowrap;">
+                                    @if (! $isLatestRecord)
+                                        {{-- A newer record exists for this member and coverage period (read from the saved records, task.md §2.37): this one is history, so it offers no Claim and no Revert. Nothing about it is changed. --}}
+                                        <span class="hint" style="margin: 0;" data-record-actions="none" title="A newer record exists for this coverage period; this record is closed.">&mdash;</span>
+                                    @else
                                     {{-- Claim | Revert for THIS record only, by its own id. The server re-checks everything under a lock (BenefitPeriodClaimController) — these buttons are only a convenience. --}}
                                     <form method="POST" action="{{ route('members.benefit-periods.claim', [$member, $period]) }}" style="display: inline;"
                                         onsubmit="if (! confirm('Mark Record #{{ $recordNo }} ({{ $year }}) as Claimed? It will be locked, and the next reimbursement filed for this coverage period opens a new record.')) { return false; } this.querySelector('button').disabled = true;">
@@ -363,10 +367,6 @@
                                         <button type="button" class="btn btn-ghost" data-record-action="revert" disabled aria-disabled="true"
                                             title="{{ $period->isReverted() ? \App\Http\Controllers\BenefitPeriodClaimController::ALREADY_REVERTED : \App\Http\Controllers\BenefitPeriodClaimController::NOTHING_TO_REVERT }}"
                                             style="padding: 4px 10px; font-size: 12px; color: var(--danger);">Revert</button>
-                                    @elseif (! $isLatestRecord)
-                                        <button type="button" class="btn btn-ghost" data-record-action="revert" disabled aria-disabled="true"
-                                            title="{{ \App\Http\Controllers\BenefitPeriodClaimController::LATER_RECORD_EXISTS }}"
-                                            style="padding: 4px 10px; font-size: 12px; color: var(--danger);">Revert</button>
                                     @else
                                         <button type="button" class="btn btn-ghost" data-record-action="revert" style="padding: 4px 10px; font-size: 12px; color: var(--danger);"
                                             onclick="openRevertBenefitPeriod({{ $period->id }}, {{ json_encode([
@@ -378,6 +378,7 @@
                                                 'to' => $activeReimbursements->count().' reimbursement'.($activeReimbursements->count() === 1 ? '' : 's').' · ₱'.number_format($activeReimbursements->sum('or_amount'), 2),
                                                 'status' => 'Claimed',
                                             ]) }})">Revert</button>
+                                    @endif
                                     @endif
                                 </td>
                             @endif
@@ -1353,7 +1354,7 @@
                                 <option value="">— None —</option>
                                 @foreach ($divisions as $division)
                                     <option value="{{ $division->id }}" @selected(old('division_id', $member->division_id) == $division->id)>
-                                        {{ $division->name }} ({{ $division->member_type === \App\Models\Member::MEMBER_TYPE_AGENT ? 'Agent' : 'Employee' }})
+                                        {{ $division->option_label }} ({{ $division->member_type === \App\Models\Member::MEMBER_TYPE_AGENT ? 'Agent' : 'Employee' }})
                                     </option>
                                 @endforeach
                             </select>
@@ -1364,7 +1365,7 @@
                                 <option value="">— None —</option>
                                 @foreach ($departments as $department)
                                     <option value="{{ $department->id }}" @selected(old('department_id', $member->department_id) == $department->id)>
-                                        {{ $department->name }}
+                                        {{ $department->option_label }}
                                     </option>
                                 @endforeach
                             </select>

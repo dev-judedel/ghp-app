@@ -15,7 +15,7 @@ class DepartmentController extends Controller
     {
         $department = Department::create([
             'name' => $request->validated('name'),
-            'division_id' => $this->resolveDivisionId($request->validated('division')),
+            'division_id' => $this->resolveDivisionId($request->validated('division_id'), $request->validated('division')),
         ]);
 
         return redirect()->route('users.index')->with('status', "Department \"{$department->name}\" added.");
@@ -25,7 +25,7 @@ class DepartmentController extends Controller
     {
         $department->update([
             'name' => $request->validated('name'),
-            'division_id' => $this->resolveDivisionId($request->validated('division')),
+            'division_id' => $this->resolveDivisionId($request->validated('division_id'), $request->validated('division')),
         ]);
 
         return redirect()->route('users.index')->with('status', "Department \"{$department->name}\" updated.");
@@ -48,27 +48,32 @@ class DepartmentController extends Controller
     }
 
     /**
-     * The Add/Edit Department form takes a division NAME (plain text, with
-     * a datalist of existing names for convenience), not a division_id
-     * select — there's no dedicated Division management screen yet.
+     * The Add/Edit Department form now picks a division by its ID (a select),
+     * because division names are not unique (task.md §2.36) and a name alone
+     * can't say which of two same-named divisions is meant. A submitted
+     * division_id (validated to exist) is used as-is; a blank one means "no
+     * division".
      *
-     * An existing division is matched case-insensitively and reused. A name
-     * that doesn't match anything creates a new Division rather than
-     * rejecting the department form — but since this text field can't
-     * specify member_type (Divisions require one: Employee/Agent), a newly
-     * created division always defaults to Employee (0). If you need an
-     * Agent-only division, it needs to exist beforehand (e.g. via a
-     * seeder/tinker) until a real Division management UI exists.
+     * The older free-text division NAME is still honored when no division_id
+     * is sent at all (older callers, tests): it is matched case-insensitively
+     * and, if several divisions share that name, the LOWEST id is used so the
+     * result is deterministic; a name that matches nothing creates a new
+     * Employee Division (Divisions can be managed on the Users page now, so
+     * that is only a convenience).
      */
-    private function resolveDivisionId(?string $name): ?int
+    private function resolveDivisionId(mixed $divisionId, ?string $name): ?int
     {
+        if ($divisionId !== null && $divisionId !== '') {
+            return (int) $divisionId;
+        }
+
         $name = trim((string) $name);
 
         if ($name === '') {
             return null;
         }
 
-        $division = Division::whereRaw('LOWER(name) = ?', [strtolower($name)])->first();
+        $division = Division::whereRaw('LOWER(name) = ?', [strtolower($name)])->orderBy('id')->first();
 
         if ($division) {
             return $division->id;

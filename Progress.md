@@ -1,137 +1,142 @@
 # Project Progress & Task Tracking
 
 **Project:** GHP — Group Health Plan Management System (`ghp-app`)
-**Document version:** 1.0
-**Last updated:** 2026-09-29
-**Primary sources:** `task.md`, `profile_features.md`, actual source code (controllers, models, migrations, requests, services), and the `tests/` directory.
+**Document version:** 2.0
+**Last updated:** 2026-10-14
+**Primary sources:** `task.md` (§2.1–§2.35), `BRD.md`, `profile_features.md`, the source code (controllers, models, migrations, requests, services, views) and the `tests/` directory.
 
-> **Status-verification note:** Per `task.md`, several of the most recent changes (§2.8–§2.13 below) are explicitly marked **"Not yet run"** by the developer who made them — meaning the migrations/tests were written from direct code inspection but have **not been confirmed to execute successfully** in this environment. This document treats those items as ⚠️ **Needs Review**, not ✅ Completed, until `php artisan migrate` and `php artisan test` have actually been run and confirmed passing.
+> **Status-verification note.** Nothing written since 2026-09-24 has been confirmed to run in this environment: the migrations were not applied and the tests were not executed (the assistant that wrote them can only read and edit files). This document therefore uses three markers:
+> ✅ = implemented and either pre-dating the unverified work or confirmed by reading the code; ⚠️ = code and tests written, **migration / tests not yet run**; ⏳ = an operational step still to be done by you.
 
 ---
 
 ## Project Progress Summary
 
-GHP is a substantially complete, actively-developed Laravel 13 application administering a Group Health Plan benefit fund. Core functionality — member/dependent management, benefit accrual calculation, reimbursement filing with balance enforcement, user management, departments, reporting, and audit logging — is implemented and covered by feature/unit tests. Two significant pieces of scope were **explicitly built and then removed** at client request (Member export, and the Benefit Period Void/Delete/Search/Filter feature) — both are fully reverted in the active codebase; only orphaned files remain in `_removed-by-claude/` for reference.
+GHP is a substantially complete Laravel 13 application that administers a Group Health Plan benefit fund. Member and dependent management, the benefit-accrual engine, reimbursement filing with automatic Excess GHP, GHP amount adjustments, user management, departments, reporting, bulk import/generation and audit logging are all implemented.
 
-The most recent working session (2026-09-24) made a business-rule change to dependent eligibility timing, added test coverage for previously-undertested financial controllers, fixed several bugs (a `ViewNotFoundException` on the reimbursement PDF receipt, stale test assertions, a 405 error on member status toggling, a PostgreSQL-only `ilike` operator breaking search and `EXTRACT/::int` syntax breaking Reports), and then reverted the Void/Delete/Search/Filter feature per an explicit client decision — including a carefully idempotent migration pair to make sure that revert is safe regardless of which partial state the live database was left in.
+**Latest work (2026-10-12) — Benefit Period RECORDS (task.md §2.35).** The claim workflow was redesigned twice in the last week and now settles on this model:
 
-**As of this update, the top priority before anything else is operational, not development work:** run `php artisan migrate` then `php artisan test` to confirm the pending migrations and the newly-written/updated tests actually pass in this environment, since several were written from code inspection alone and are flagged as unverified.
+- A coverage cycle is **generated once**, but it can hold **several Benefit Period records** (`benefit_periods.record_no` 1, 2, 3 …).
+- One **Unclaimed** record collects every reimbursement filed until it is **Claimed**. Claim locks that record only. The next reimbursement filed for the same cycle opens a **new** record (never created empty or in advance).
+- The entitlement is the cycle's and is computed once; a new record is never a new grant. `BenefitPeriod::summarizeCycle()` is the single way to read "the cycle's figures" (entitlement once, Used summed, Available from the last record).
+- This **supersedes** the per-reimbursement claim design of §2.32–§2.34. During this pass the code was checked against the specification and four defects were fixed (see Issues / Bugs): the member page referenced a variable and routes that no longer existed, reports showed one record's share of Used, GHP adjustments measured the increase from a stale amount, and a refresh reported a phantom change.
+
+**Top priority now is operational, not development:** run `php artisan migrate` and `php artisan test`, then walk the 8-step workflow in the browser. A large amount of recent code (§2.14 – §2.35) is unverified.
 
 ---
 
 ## Completed Features
 
-Features confirmed actually implemented and working based on the current code (not merely mentioned in documentation):
+Implemented in code (⚠️ = written but migration/tests not yet run):
 
-- ✅ Self-service Profile page (view/edit name, email, photo with initials fallback; change password)
-- ✅ Member search (bug-fixed: `ilike` → `like` for MySQL/SQLite compatibility)
-- ✅ User Management: auto-generated user code, Active/Inactive status, deactivate/reactivate with mid-session enforcement, strengthened email validation
-- ✅ Member Management: email field, auto/manual member code, individual + bulk Activate/Deactivate, required `apply_date`/`start_date`
-- ✅ Department Management (pre-existing, verified functional; free-text Division assignment)
-- ✅ Dependent management with mid-cycle eligibility gating (dependents added mid-cycle wait until the next coverage cycle to raise the GHP amount)
-- ✅ Benefit accrual engine (`BenefitAccrualService`) — coverage-year logic, 3,600/4,200 GHP amount rule, monthly proration, 10% unused carry-forward
-- ✅ Strict one-benefit-period-per-cycle enforcement (after the Void/Delete feature's full revert)
-- ✅ Reimbursement filing/editing: a positive Available GHP is required to file, but the amount has no cap and isn't limited by the balance (₱10,000 claim on ₱1,000 available is allowed; ₱0 available is rejected); void/unvoid with reason
-- ✅ Coverage Year History → Reimbursement drill-down, with printable/downloadable PDF receipt (bug-fixed: missing Blade view)
-- ✅ Manual GHP amount adjustment / revert-to-automatic, with structured history
-- ✅ Reports: Annual GHP (PDF/CSV), Reimbursements (PDF/CSV), Member Data Record (PDF) — bug-fixed: PostgreSQL-only `EXTRACT(...)::int` syntax replaced with portable Eloquent
-- ✅ Data Quality Report (corrupted dates, ₱0 active members, missing current-cycle periods, legacy orphan counts)
-- ✅ Activity Log (admin-viewable, filterable)
-- ✅ Member CSV import (template download + import with per-row validation/skip reporting)
-- ✅ Legacy PostgreSQL data import console command (`ghp:import-legacy`)
-- ✅ Accrual engine validation console command (`ghp:validate-accrual`, read-only)
-- ✅ Daily scheduled benefit-period auto-generation job (registered; external trigger still required — see Pending)
-- ⚠️ **Reimbursement amount limit removed + AUTOMATIC Excess GHP** (task.md §2.19 filing rule, §2.20): filing needs a positive Available GHP only (no amount cap). When a claim is above the Available GHP at filing, the server saves `available_ghp` and `excess_amount = amount − available` on the reimbursement itself (e.g. ₱3,000 available / ₱5,000 claim → ₱2,000 excess; the full ₱5,000 is kept). Nothing is entered by hand — the manual Record Excess Deduction button/modal is gone. GHP usage, Available GHP, GHP amount, monthly GHP and required amount are unchanged (nothing in the calculation reads the excess). Only claims with an excess are red (member page, records page, receipt PDF, report PDF, MDR PDF, email); CSV has separate Available GHP / Excess Deduction columns. Older manually recorded excess deductions are kept read-only. Code + tests written (`ExcessDeductionTest`, `ReimbursementManagementTest`); **migrations `2026_09_30_100000` / `2026_09_30_110000` and tests not yet run**.
-- ⚠️ **Dependent benefit increase covers outstanding excess GHP** (task.md §2.21): when a dependent becomes eligible (Immediate Eligibility), the actual increase of the fund (new rate − old rate × months rendered, e.g. 10 × 350 − 10 × 300 = ₱500) is applied to the member's active reimbursements' remaining excess, oldest first, never more than the increase or the excess; the rest stays in Available GHP. The reimbursement keeps its id and amount; `original_excess_amount` / `excess_covered_amount` are stored and `excess_amount` is the remaining excess (red while > 0). Used GHP is not increased (the covered part is reported separately). Shown on the member page, records page, receipt, report PDF, email and CSV. Not reversed if a dependent is later removed. Code + tests (`DependentExcessCoverageTest`) written; **migration `2026_09_30_120000` and tests not yet run**.
-- ⚠️ **Dependent removal guard** (task.md §2.22): the Remove button on the Dependents table is disabled (with a tooltip) while the member has any active, i.e. non-voided, reimbursement, and `DELETE /members/{member}/dependents/{dependent}` is refused on the backend with the same message — nothing is deleted or recalculated. Voiding/cancelling the last active claim re-enables it. Code + tests written (`DependentRemovalGuardTest`); **not yet run**.
-- ⚠️ **Editable GHP Benefit Setup / configurable coverage period** (task.md §2.18): Coverage year, Apply date, End date, Start date (deductions) and GHP amount are editable on Add member and (except the amount) Edit member; the engine follows each member's configured 12-month cycle instead of a hardcoded Apr–Mar / Jun–May one, rolls it forward yearly, and keeps existing members on the standard cycle. Generated history is never rewritten (overlapping changes are refused) and one-period-per-cycle still blocks duplicates. Code complete; **migration and tests not yet run**.
-- ⚠️ Immediate Eligibility for dependents + Dependent Spouse in Edit member (task.md §2.14), current-period recalculation when a dependent becomes eligible (§2.16), fix for the un-clickable Generate button (§2.15), and Send receipt by email (§2.17, needs real SMTP in `.env`) — all written, none confirmed run
+**Accounts and members**
+- ✅ Self-service Profile (name, email, photo with initials fallback, password change)
+- ✅ User Management (auto user code, Active/Inactive with mid-session enforcement, last-admin safeguards)
+- ✅ Member Management: auto/manual code, email, individual + bulk Activate/Deactivate, required apply/start dates, live search and filters, pagination
+- ⚠️ Deactivated member is read-only — every modifying route sits behind `member.active` middleware, buttons disabled, modals not rendered (§2.23–§2.24)
+- ⚠️ Editable GHP Benefit Setup: Coverage year, Apply date, End date, Start date (deductions), GHP amount; configurable 12-month cycle (§2.18)
+- ⚠️ Bulk CSV import rebuilt on the real `StoreMemberRequest` rules via a shared `MemberCreationService`, with database and in-file duplicate detection and BOM handling (§2.26)
+- ✅ Department Management; ✅ Data Quality Report; ✅ Activity Log
+- ⚠️ **Duplicate Department / Division names allowed + Division Management** (2026-10-14, §2.36): names are no longer unique, records are told apart by id (dropdowns submit ids and label a repeated name with "#id"); Add / Edit / Delete Divisions on the Users page; the Department form picks a division by id
+- ✅ Legacy import (`ghp:import-legacy`) and read-only `ghp:validate-accrual`
+
+**Dependents**
+- ✅ Dependent management with mid-cycle eligibility gating (next cycle) (§2.12)
+- ⚠️ Immediate Eligibility, spouse via Edit member (§2.14); the current period recalculates in place when a dependent becomes eligible (§2.16)
+- ⚠️ A dependent's removal is blocked while the member has an active reimbursement (§2.22)
+
+**Benefit periods and reimbursements**
+- ✅ Accrual engine (`BenefitAccrualService`): coverage cycle, ₱3,600 / ₱4,200 annual amount, monthly proration, 10% carry-forward
+- ⚠️ **Benefit Period records** (§2.35): several records per cycle, `record_no`, unique key `(member_id, from_date, to_date, record_no)`; filing goes into the open record or opens the next one only when every record is Claimed
+- ⚠️ **Claim | Revert per record** (`BenefitPeriodClaimController`, routes `members.benefit-periods.claim / .revert`): admin-only, member row lock then record lock, Claim refused for an empty record, Revert only for the cycle's latest record, one audit entry per action
+- ⚠️ A Claimed record is locked everywhere: its reimbursements can't be edited, voided or un-voided; later GHP increases never cover its excess; reverting an adjustment that covered a Claimed record is refused
+- ⚠️ **Coverage Year History** rebuilt as one row per record: Period | GHP amount | Used GHP | Available GHP | Status | Claim / Revert, with each record's reimbursements listed under it
+- ✅ Reimbursement filing: a positive Available GHP is required, the amount has no cap; edit, void/unvoid; one-time `submission_token` + unique index against double filing; transaction + member row lock
+- ⚠️ **Automatic Excess GHP** (§2.20) and **dependent increase / GHP adjustment covers outstanding excess** (§2.21, §2.29), shown in red on every screen, export and email; the manual Record Excess Deduction feature was removed (old rows kept read-only)
+- ⚠️ Adjust GHP amount: revert to automatic **and** revert just the latest active adjustment (§2.29, §2.31), with an `excess_coverages` ledger
+- ⚠️ Bulk "Generate this year's benefit period" is all-or-nothing, with a pre-check and a "Generation Not Proceeded" dialog (§2.27)
+- ✅ Reimbursement drill-down per record, printable / downloadable PDF receipt; ⚠️ Send receipt by email (§2.17, needs real SMTP in `.env`)
+- ✅ Reports: Annual GHP (PDF/CSV), Reimbursements (PDF/CSV), Member Data Record (PDF). ⚠️ The Annual report and the MDR now report one set of figures per cycle however many records it has
+- ✅ Daily auto-generation job (registered; needs an external scheduler trigger)
 
 ---
 
 ## Current Tasks
 
-Per `task.md`, work is currently at a **stabilization / verification checkpoint** rather than mid-feature. The primary open task is:
-
-| Task | Source | Status |
-|---|---|---|
-| Run `php artisan migrate` to apply the two most recent migrations (`2026_09_24_100000_...` idempotent rewrite, `2026_09_24_200000_...` revert, plus `2026_09_24_110000_...` dependent eligibility fields, and `2026_09_21_100000_...` benefit_period_id backfill if not already applied) | task.md §2.9, §2.12, §2.13 | ⏳ Pending — not confirmed run in this environment |
-| Run `php artisan test --filter=DependentBenefitRecalculationTest` and `--filter=ImmediateEligibilityTest` (task.md §2.16: eligible dependent now recalculates the current period's GHP amount/Available in place, e.g. 3,600/1,800 -> 4,200/2,100 at 6 months rendered; no migration needed) | task.md §2.16 | ⏳ Pending — written, not yet run |
-| Run `php artisan test` to confirm all recently written/updated tests actually pass | task.md §2.8, §2.9, §2.10, §2.12, §2.13 | ⏳ Pending — not confirmed run in this environment |
-| Run `php artisan migrate` for `2026_09_29_100000_add_coverage_setup_to_members_and_benefit_periods` (adds `members.coverage_year` / `coverage_end_date`, `benefit_periods.coverage_year` + backfill), then `php artisan test --filter=CoverageSetupTest` and the full suite (the engine change touches reimbursement, dependent and adjustment tests) | task.md §2.18 | ⏳ Pending — written, not yet run |
-| Run `php artisan migrate` (adds `excess_deductions` and the `reimbursements.available_ghp` / `excess_amount` columns), then `php artisan test --filter=ExcessDeductionTest` and `--filter=ReimbursementManagementTest`, then the full suite | task.md §2.19, §2.20 | ⏳ Pending — written, not yet run |
-| Manually try filing a reimbursement above the available balance (allowed, excess saved and shown in red), one within it (no red) and one with ₱0 available (blocked), then check the red marking and the Available GHP / Excess Deduction columns on the member page, the records page, the printed/downloaded receipt, the report PDF/CSV and the MDR | task.md §2.20 | ⏳ Pending |
-| Manually try the Add member / Edit member Benefit setup on screen: Employee vs Agent defaults, Coverage year ↔ End date staying in sync, the live "required this cycle" preview, and the validation messages | task.md §2.18 | ⏳ Pending |
-| Watch specifically for a unique-constraint error from the `..._200000_revert...` migration (would indicate an ambiguous voided-duplicate benefit-period row needing manual review) | task.md §2.13 | ⚠️ Needs Review if/when migration is run |
-| Re-run `ReimbursementManagementTest` / `AmountAdjustmentManagementTest` specifically, since `BenefitAccrualService` changed again after those tests were written | task.md §2.13 | ⏳ Pending |
-| Delete the `_removed-by-claude/` folder once its contents are confirmed no longer needed (orphaned export controller/view, reverted Void feature's request/test) | task.md §2.7, §2.13 | ⏳ Pending (manual cleanup decision, not automatic) |
+| # | Task | Source | Status |
+|---|---|---|---|
+| 1 | `php artisan migrate`. Pending migrations include `2026_09_29_100000` (coverage setup), `2026_09_30_100000 / 110000 / 120000` (excess), `2026_10_07_100000 / 100001`, `2026_10_08_100000 / 110000` (adjustment ledger, revert fields), `2026_10_09_100000` (claim fields, now superseded but still in the chain) and **`2026_10_10_100000_support_multiple_benefit_period_records`** | §2.18–§2.35 | ⏳ Not confirmed run |
+| 1b | Same `php artisan migrate` also applies **`2026_10_14_100000_allow_duplicate_department_and_division_names`** (drops the two unique name indexes only), then `php artisan test --filter=DuplicateNamesTest` and `--filter=DepartmentManagementTest` | §2.36 | ⏳ Not run |
+| 2 | `php artisan test --filter=BenefitPeriodRecordTest` (new, covers the 8-step specification and the edge cases) | §2.35 | ⏳ Not run |
+| 3 | `php artisan test` (full suite). Watch `CoverageSetupTest` and `GenerateBenefitPeriodButtonTest`, which were not read against the new design and may still assume one period per cycle | §2.35 | ⏳ Not run |
+| 4 | Manually run the 8-step workflow in the browser (500 / 700 / 800 → Claim → 600 → 400 → Claim → Revert) and check that the member page, the period drill-down, the receipt PDF and the Annual report agree | §2.35 | ⏳ Not done |
+| 5 | Check the migration backfill on a copy of live data: a period becomes Claimed only when every active reimbursement was claimed; partly-claimed periods stay Unclaimed and need an admin to claim them | §2.35 | ⏳ Not done |
+| 6 | Try filing above the available balance (allowed, red excess), within it, and with ₱0 available (blocked) | §2.20 | ⏳ Not done |
+| 7 | Try Add / Edit member Benefit setup on screen (Employee vs Agent defaults, Coverage year ↔ End date, live preview) | §2.18 | ⏳ Not done |
+| 8 | Set real SMTP values in `.env` (the default `MAIL_MAILER=log` delivers nothing) and test "Send" on a receipt | §2.17 | ⏳ Not done |
+| 9 | Clean up `_removed-by-claude/` once nothing in it is needed (it now also holds the superseded per-reimbursement claim controller, view partial and tests, plus an old `BenefitPeriodClaimController.php` with the same name as the live one — do not move it back) | §2.7, §2.35 | ⏳ Manual decision |
 
 ---
 
 ## In Progress
 
-Nothing is currently mid-implementation. The most recently touched feature (dependent eligibility timing, §2.12) is code-complete but its migration/tests are unverified (see Current Tasks above) — categorized here as **partially confirmed** rather than "in progress" in the traditional sense, since no further code changes are expected, only verification.
+Nothing is mid-implementation. The Benefit Period record work is code-complete but unverified (Current Tasks 1–5).
 
-| Item | What's done | What's outstanding |
+| Item | Done | Outstanding |
 |---|---|---|
-| Dependent mid-cycle eligibility gating | Migration written, model/service/controller logic written, view updated, tests written | Migration + test run not yet confirmed |
-| Reimbursement PDF receipt fix | View created, controller reference corrected | Manual print/PDF verification not yet performed |
+| Benefit Period records (§2.35) | Migration, accrual service, filing, claim/revert controller, member page, reports, tests written; four defects fixed | Migration + tests not run; browser walk-through not done |
+| Superseded record design (§2.32–§2.34) | Marked SUPERSEDED in `task.md`; files parked | Delete the parked files when ready |
 
 ---
 
 ## Pending
 
-Features/tasks with **no implementation work done yet**, explicitly flagged as out of scope for now (`task.md §4`):
+**Not implemented (explicitly out of scope so far):**
+- ❌ Self-service "forgot password"
+- ❌ Rate limiting on login
+- ❌ Session invalidation on password change
+- ❌ Export for Users or Departments (Member export was built then removed)
+- ❌ `LEGACY_DB_*` documented in `.env.example`
+- ❌ Automated tests for `ImportLegacyGhpData`
+- ❌ Business decision on a formal enum for dependent `relation`
+- ❌ Evaluate merging `benefit_periods` and `benefit_ledger`
 
-- ❌ Division CRUD (dedicated Add/Edit/Delete UI) — currently only indirectly manageable via the Department form
-- ❌ Self-service "forgot password" (email-based reset flow)
-- ❌ Rate limiting on the login route
-- ❌ Session invalidation when a password is changed (self-service or admin-issued)
-- ❌ Any export functionality for Users or Departments (only Members ever had export, and it was removed)
-- ❌ Documenting `LEGACY_DB_*` variables in `.env.example`
-- ❌ Automated test coverage for `ImportLegacyGhpData` (the console import command — the last remaining gap from the original test-coverage review)
-- ❌ Business-owner decision on normalizing legacy-typo dependent `relation` values into a formal enum
-- ❌ Evaluation of merging `benefit_periods` and `benefit_ledger` tables
+**Open items created by the recent work:**
+- A dependent-driven excess cover is still **not reversible** if the dependent is later removed. The `dependent_fund_increases` table exists but has no model or code.
+- The Reimbursements card on the member page still shows the **latest 20** only; the complete history is in the Coverage Year History rows and the period drill-down.
+- Comments in `BulkBenefitPeriodGenerator` and `AutoGenerateBenefitPeriods` still describe the old 3-column unique key.
+- The legacy `reimbursements.claimed_at / claimed_by / reverted_at / reverted_by` columns are kept as history and are no longer read or written.
 
-**Operational (not code) tasks required to run the app, per the setup checklist:**
-- `php artisan migrate`
-- `php artisan storage:link` (required for profile photo uploads to display)
-- An OS-level scheduler trigger (e.g. Windows Task Scheduler on this Laragon environment) configured to run `php artisan schedule:run` regularly, or the daily benefit-period auto-generation job will never actually fire despite being correctly registered in code
+**Operational:** `php artisan storage:link` (profile photos) and an OS-level scheduler (Windows Task Scheduler on this Laragon setup) running `php artisan schedule:run`, otherwise the daily auto-generation job never fires.
 
 ---
 
 ## Issues / Bugs
 
-### Fixed this tracked history
-| Bug | Root cause | Fix | Status |
-|---|---|---|---|
-| Member search threw a SQL error on any non-empty search | `'ilike'` (Postgres-only) used against MySQL/SQLite | Changed to `'like'` in `MemberController::index()` | ✅ Fixed |
-| `GET /reports` threw a SQL syntax error on every load | `EXTRACT(YEAR FROM from_date)::int` — PostgreSQL-only syntax | Replaced with portable Eloquent/Carbon logic | ✅ Fixed |
-| Individual member Deactivate/Reactivate button returned HTTP 405 | Per-row `<form>` nested inside the outer bulk-select `<form>`; browsers merged the fields, submitting to the wrong (POST-only) bulk-action endpoint | Replaced nested form with a JS function building a standalone out-of-DOM form | ✅ Fixed |
-| `BenefitPeriodController::reimbursementsPdf()` threw `ViewNotFoundException` | Referenced Blade view `reports.pdf.reimbursement-receipt` never existed | Created the missing view (A4, company header, tables, totals, empty-state) | ✅ Fixed — **not yet manually verified** (task.md explicitly flags this) |
-| Two `MemberManagementTest` tests failed | Called the deactivate endpoint without a `resignation_date`, which `UpdateMemberStatusRequest` requires when deactivating an active member — tests were never updated when that validation rule was added | Both tests updated to send `resignation_date` | ✅ Fixed |
-| 3 tests in `BenefitAccrualServiceTest` asserted stale "day ≥ 15 cutoff" behavior no longer implemented (calendar-month-only counting supersedes it) | Tests never updated after the Sep 2026 Deduction Date rework | Rewrote the day-of-month test to demonstrate day-of-month no longer matters; corrected two mid-year proration tests to use a correctly-resolved `deduction_start_date` | ✅ Fixed |
-| `MemberBenefitSetupTest` asserted the *old*, now-incorrect immediate-GHP-bump-on-dependent-add behavior | Business rule changed (§2.12) — behavior intentionally changed, not a regression | Replaced with tests asserting the new pending-until-next-cycle behavior | ✅ Fixed (intentional behavior change, test updated to match) |
-| A local test-environment issue: missing `pdo_sqlite` extension | Environment configuration gap | Switched `phpunit.xml` to a dedicated MySQL test database (`alsc_ghp_db_testing`) | ✅ Fixed |
-| Stale Laravel scaffold test `ExampleTest.php` asserted HTTP 200 at `/` | `/` has always redirected to `/dashboard` in this app; test never updated | Corrected the assertion | ✅ Fixed |
+### Fixed in this pass (2026-10-12, §2.35)
+| Bug | Root cause | Fix |
+|---|---|---|
+| Member page would throw on load | `members/show.blade.php` still used the removed `$historyRows` variable and the removed `members.reimbursements.claim / .revert` routes and `ReimbursementClaimController` constants | Coverage Year History rebuilt per Benefit Period record on the live routes and `BenefitPeriodClaimController` constants |
+| Reports under-reported Used when a cycle had several records | Annual GHP report, MDR and the member page's Benefit balance card used `->first()` of the member's periods | All three use `BenefitPeriod::summarizeCycle()` |
+| GHP adjustment measured the increase from a stale amount | `AmountAdjustmentService::apply()` took `->first()` (record 1, frozen at its claim) as the "before" amount | Uses the cycle's open record, or the member's amount before the change when every record is Claimed |
+| A refresh reported a change on every call | `refreshCurrentPeriodIfAmountChanged()` compared the member's amount with a Claimed record's frozen amount | Returns null when every record is Claimed |
+| Claiming an empty record would lock nothing | No check for active reimbursements | `NOTHING_TO_CLAIM`, in the UI and on the server |
 
-### Known, intentionally unfixed (see Known Limitations in BRD.md §11)
+### Fixed earlier (see task.md for detail)
+Member search `ilike` → `like`; `GET /reports` PostgreSQL-only SQL; 405 on the member status toggle (nested form); missing PDF receipt view; stale tests (`MemberManagementTest`, `BenefitAccrualServiceTest`, `MemberBenefitSetupTest`, `ExampleTest`, `DependentExcessCoverageTest` CSV column label); un-clickable Generate button and phantom period creation by amount adjustments (§2.15); `fgetcsv` BOM corrupting the first import header (§2.26); dead inactive-member branch in `generateBenefitPeriod()` (§2.24); `pdo_sqlite` environment gap (tests use MySQL).
+
+### Known, intentionally unfixed
 | Issue | Notes |
 |---|---|
-| No rate limiting on `POST /login` | Flagged, out of scope for the request that surfaced it |
-| `agent_positions.member_code` is a string match, not an FK | Silent-breakage risk if a code is reformatted/typo'd |
-| `dependents.relation` is free text, not an enum | Legacy-data bridge; typo risk on eligibility logic |
-| `.card-head` CSS doesn't wrap on narrow screens | Shared CSS file — deliberately not touched |
-| `users.email_verified_at` unused | Present in schema, nothing sets or checks it |
-| Password change doesn't invalidate other sessions | Stolen-session risk after a reset |
+| No rate limiting on `POST /login` | Out of scope so far |
+| `agent_positions.member_code` is a string match | Silent breakage risk if a code is reformatted |
+| `dependents.relation` is free text | Legacy bridge; typo risk on eligibility |
+| `.card-head` doesn't wrap on narrow screens | Shared CSS, untouched |
+| `users.email_verified_at` unused | Nothing sets or checks it |
+| Password change doesn't invalidate other sessions | Stolen-session risk |
 
-### Unverified fixes (explicitly flagged "Not yet run" in `task.md`)
-These were written correctly per code review by the developer, but their actual execution has not been confirmed:
-- The two-migration Void-feature revert pair (`2026_09_24_100000...`, `2026_09_24_200000...`)
-- The `benefit_period_id` backfill migration (`2026_09_21_100000...`)
-- The dependent eligibility fields migration (`2026_09_24_110000...`)
-- `ReimbursementManagementTest.php`, `AmountAdjustmentManagementTest.php`, `DataQualityReportTest.php` (written from reading controllers/requests/models directly, not yet executed)
-- `BenefitAccrualServiceTest.php`'s newest eligibility-date test cases
+### Unverified (never run in this environment)
+Every migration listed in Current Tasks #1, every test file marked ⚠️ in Testing Status, the Print/PDF receipt and the Send-receipt email, and all of the on-screen behaviour described above.
 
 ---
 
@@ -139,18 +144,21 @@ These were written correctly per code review by the developer, but their actual 
 
 | Area | Status |
 |---|---|
-| Core schema (users, members, divisions, departments, dependents, benefit_periods, benefit_ledger, benefit_amount_adjustments, reimbursements, agent_positions) | ✅ Implemented, stable |
-| `spatie/laravel-activitylog` tables | ✅ Implemented |
-| Profile photo support (`users.profile_photo_path`) | ✅ Implemented |
-| User Active/Inactive + auto-generated `user_code` (with backfill for existing rows) | ✅ Implemented |
-| Member email, resignation date, start date, `ghp_amount_is_manual` | ✅ Implemented |
-| Department ↔ Division FK | ✅ Implemented |
-| `reimbursements.benefit_period_id` link + one-time backfill | ✅ Implemented — **not yet confirmed run** in this environment |
-| Dependent `date_added` / `eligibility_date` (nullable, deliberately not backfilled) | ✅ Implemented — **not yet confirmed run** |
-| Benefit Period Void/Delete fields (`is_voided`, `voided_at`, `voided_reason`, `voided_by`) | ❌ **Fully reverted** — added then removed same day (§2.11 → §2.13); the reverting migration also restores the original `unique(member_id, from_date, to_date)` constraint that enforces the strict one-generation-per-cycle rule |
-| Division management (dedicated CRUD) | ❌ Not implemented — no schema gap, purely a missing UI layer |
+| Core schema (users, members, divisions, departments, dependents, benefit_periods, benefit_ledger, benefit_amount_adjustments, reimbursements, agent_positions) and Spatie activity log | ✅ Stable |
+| Member / user fields (email, resignation date, start date, `ghp_amount_is_manual`, `user_code`, profile photo) | ✅ |
+| `reimbursements.benefit_period_id` link + backfill | ✅ written, ⏳ not confirmed run |
+| `dependents.date_added / eligibility_date / immediate_eligibility_*` | ⚠️ |
+| `members.coverage_year / coverage_end_date`, `benefit_periods.coverage_year` (+ backfill) | ⚠️ |
+| `reimbursements.available_ghp / excess_amount / original_excess_amount / excess_covered_amount / submission_token (unique)` | ⚠️ |
+| `excess_deductions` (read-only history), `excess_coverages` (reversal ledger), `benefit_amount_adjustments` tracking columns | ⚠️ |
+| `benefit_periods.claimed_at / claimed_by / reverted_at / reverted_by` | ⚠️ now the live claim state, per record |
+| **`benefit_periods.record_no`; unique key `(member_id, from_date, to_date, record_no)`** | ⚠️ migration `2026_10_10_100000`, idempotent; every existing row becomes record 1 |
+| `reimbursements.claimed_at / claimed_by / reverted_at / reverted_by` | ⚠️ retired — kept as history, not read or written |
+| `dependent_fund_increases` | ⚠️ table only, no code uses it |
+| `departments.name` and `divisions (member_type, name)` unique indexes | ⚠️ dropped by `2026_10_14_100000` (plain indexes added; rows, keys and foreign keys untouched) |
+| Benefit Period Void/Delete fields | ❌ fully reverted (§2.13) |
 
-**Data-safety note on the revert:** the revert migration (`2026_09_24_200000_...`) only removes a voided benefit-period row when a confirmed active sibling exists for the exact same member+cycle (i.e., a genuinely superseded row from a void-then-regenerate cycle). A voided row with no active sibling is left untouched. Any other ambiguous duplicate is deliberately left alone so the unique-constraint step fails loudly rather than silently discarding data — this needs a human look if it happens.
+**Data-safety notes.** The Void-feature revert migration removes a voided row only when an active sibling exists for the same member and cycle, and fails loudly otherwise. The §2.35 migration never deletes data; its `down()` refuses while any cycle has several records.
 
 ---
 
@@ -158,55 +166,45 @@ These were written correctly per code review by the developer, but their actual 
 
 | Area | Status |
 |---|---|
-| Topbar profile link + avatar/initials badge | ✅ Implemented |
-| Member list: live/AJAX search, filters, pagination | ✅ Implemented |
-| Member page: modal-based add/edit patterns (consistent with the rest of the app) for dependents, reimbursements, amount adjustments | ✅ Implemented |
-| Dependents table: Date Added, Status badge (Eligible / Pending Eligibility / Not Eligible), Eligible Period columns | ✅ Implemented |
-| Benefit periods card on member page | ✅ Implemented — **back to its original plain table** (Period / GHP amount / Used / Available) after the Void/Delete feature revert; no Action column, no search/filter bar |
-| Users page: Department Management card (ID / Department / Division / Action) | ✅ Implemented (pre-existing, verified working) |
-| Reports page filters (type/department/division/status/year, date range) | ✅ Implemented |
-| Data Quality Report page | ✅ Implemented |
-| Activity Log page (filterable by log name) | ✅ Implemented |
-| Reimbursement receipt (company letterhead PDF) | ✅ Implemented — view fixed this session, **print/PDF not yet manually verified** |
-| Narrow/mobile viewport layout | ⚠️ Needs Review — `.card-head` known not to wrap cleanly; not addressed |
+| Topbar profile link + avatar | ✅ |
+| Member list (live search, filters, pagination); Add member modal with Benefit setup; CSV import with duplicate reporting | ✅ / ⚠️ |
+| Member page: Benefit balance card (cycle figures via `summarizeCycle()`), Dependents table with eligibility status and Immediate Eligibility, Reimbursements card with Remaining GHP / Excess columns and Claimed/Reverted badges | ⚠️ |
+| **Coverage Year History**: one row per Benefit Period record — status badge, reimbursements grouped under the record, Claim / Revert, Revert confirmation modal | ⚠️ |
+| Amount adjustment history with per-adjustment Revert | ⚠️ |
+| Deactivated-member banner, disabled buttons, modals omitted | ⚠️ |
+| Bulk Generate pre-check and "Generation Not Proceeded" dialog | ⚠️ |
+| Reimbursement records page, receipt PDF, report PDFs, MDR, email — red Excess GHP marking | ⚠️ |
+| Reports page, Data Quality page, Activity Log | ✅ |
+| Narrow / mobile layout | ⚠️ needs review (`.card-head`) |
+| Add member standalone page `members/create.blade.php` | not updated for Benefit setup (not routed) |
 
 ---
 
 ## Testing Status
 
-**Test framework:** PHPUnit-style `TestCase` classes under `tests/Feature` and `tests/Unit` (Pest is present as a dependency but the existing suite is written in classic PHPUnit class style). Configured against a dedicated MySQL database (`alsc_ghp_db_testing`) per `phpunit.xml`.
+**Framework:** classic PHPUnit `TestCase` classes under `tests/Feature` and `tests/Unit`, run against the dedicated MySQL database `alsc_ghp_db_testing` (`phpunit.xml`). No test was executed in this environment since 2026-09-24.
 
-### Existing test files
 | File | Covers | Status |
 |---|---|---|
-| `tests/Feature/ProfileTest.php` | Self-service profile edit/password change | ✅ Present |
-| `tests/Feature/MemberSearchTest.php` | Member search (post-`ilike` fix) | ✅ Present |
-| `tests/Feature/UserManagementTest.php` | User CRUD, status toggling, last-admin safeguards | ✅ Present |
-| `tests/Feature/MemberManagementTest.php` | Member CRUD, email, code generation, status, required dates | ✅ Present, updated this session |
-| `tests/Feature/MemberDeactivationTest.php` | Member deactivate/reactivate flow, resignation date rule | ✅ Present |
-| `tests/Feature/MemberFilterPersistenceTest.php` | Filter/search state persistence | ✅ Present |
-| `tests/Feature/MemberImportTest.php` | CSV import (valid/invalid rows, skip reporting) | ✅ Present |
-| `tests/Feature/DepartmentManagementTest.php` | Department CRUD | ✅ Present (added this session — was previously untested despite the feature pre-existing) |
-| `tests/Feature/ReimbursementManagementTest.php` | Filing, editing, void/unvoid, balance enforcement, OR-date linking | ✅ Present (added this session) — ⚠️ **not yet run** |
-| `tests/Feature/AmountAdjustmentManagementTest.php` | Manual override, revert-to-automatic, history | ✅ Present (added this session) — ⚠️ **not yet run** |
-| `tests/Feature/DataQualityReportTest.php` | Admin-only access, all three live-DB detectors | ✅ Present (added this session) — ⚠️ **not yet run** |
-| `tests/Feature/MemberBenefitSetupTest.php` | Dependent-driven GHP amount recalculation, including new eligibility-timing behavior | ✅ Present, updated this session — ⚠️ **not yet run** (new cases) |
-| `tests/Feature/ReportExportTest.php` | Report PDF/CSV export | ✅ Present |
-| `tests/Feature/ExampleTest.php` | Laravel scaffold smoke test | ✅ Present, corrected this session |
-| `tests/Unit/BenefitAccrualServiceTest.php` | Core accrual math: coverage periods, proration, carry-forward, eligibility gating | ✅ Present, updated this session — ⚠️ **not yet run** (new/changed cases) |
-| `tests/Unit/ExampleTest.php` | Scaffold unit smoke test | ✅ Present |
+| `BenefitPeriodRecordTest` | **New (§2.35).** 8-step specification workflow; no new entitlement; excess on a new record; zero balance creates no record; empty record can't be claimed; only the latest record can be reverted; a reverted record takes the next filing; server-side admin / ownership / deactivation rules; claimed reimbursement locked; duplicate token; GHP adjustment / dependent increase vs Claimed excess; adjustment revert refused; page rendering; Annual report counts a cycle once; MDR and receipts; generation once per cycle; 4-column unique key | ⚠️ |
+| `InactiveMemberLockTest` | Deactivated member read-only (already updated to the record-based claim / revert routes) | ⚠️ |
+| `BulkBenefitPeriodGenerationTest`, `GenerateBenefitPeriodButtonTest`, `CoverageSetupTest` | Generation rules, configurable cycle. The bulk test looks compatible with record numbers; the other two were **not read** against §2.35 | ⚠️ |
+| `ReimbursementManagementTest`, `ExcessDeductionTest`, `DependentExcessCoverageTest`, `DependentRemovalGuardTest`, `DependentBenefitRecalculationTest`, `ImmediateEligibilityTest` | Filing rule, automatic excess, dependent covers, removal guard, recalculation | ⚠️ |
+| `AmountAdjustmentManagementTest`, `AmountAdjustmentExcessCoverageTest`, `AmountAdjustmentFollowUpTest`, `AmountAdjustmentIndividualRevertTest` | Adjustments, excess cover, per-adjustment revert | ⚠️ |
+| `MemberImportTest`, `SendReimbursementReceiptTest`, `DataQualityReportTest`, `MemberBenefitSetupTest`, `BenefitAccrualServiceTest` (Unit) | Import, email, data quality, dependent timing, accrual math | ⚠️ |
+| `DuplicateNamesTest` (new), `DepartmentManagementTest` (updated) | Same-name departments / divisions, edit / delete one duplicate, member assignment by id, dropdown labels, CSV lowest-id, unique indexes gone | ⚠️ |
+| `ProfileTest`, `MemberSearchTest`, `UserManagementTest`, `MemberManagementTest`, `MemberDeactivationTest`, `MemberFilterPersistenceTest`, `DepartmentManagementTest`, `ReportExportTest`, `ExampleTest` ×2 | Older coverage | ✅ present |
 
-### Confirmed gaps
-- ❌ **`ImportLegacyGhpData`** (the console import command) has **no automated test coverage** — the single largest remaining testing gap, explicitly called out in `task.md` as still open.
-- The Benefit Period Void/Delete feature's test (`BenefitPeriodManagementTest.php`) was **moved to `_removed-by-claude/`** along with the feature's own revert — it is not part of the active test suite and should not be restored unless the feature itself is reinstated.
+**Superseded and parked in `_removed-by-claude/` (do not restore):** `ReimbursementRecordTest` (per-reimbursement design), `BenefitPeriodClaimTest` (per-period claim design of §2.28–§2.30), `BenefitPeriodManagementTest` (reverted Void/Delete).
 
-### Immediate next testing action
-Run, in order, in this environment:
+**Gaps:** `ImportLegacyGhpData` has no automated tests. The migration backfill and a truly concurrent double submit are not tested (sequential only).
+
+**Run, in order:**
 ```bash
 php artisan migrate
+php artisan test --filter=BenefitPeriodRecordTest
 php artisan test
 ```
-Pay particular attention to `MemberBenefitSetupTest` and `BenefitAccrualServiceTest` (both touched by the dependent-eligibility-timing change), and to `ReimbursementManagementTest`/`AmountAdjustmentManagementTest` (both dependent on `BenefitAccrualService`, which changed again after they were written).
 
 ---
 
@@ -214,27 +212,26 @@ Pay particular attention to `MemberBenefitSetupTest` and `BenefitAccrualServiceT
 
 | Document | Status |
 |---|---|
-| `task.md` | ✅ Actively maintained, detailed, last updated 2026-09-24 — treated as the primary source of truth for recent history in this Progress.md |
-| `profile_features.md` | ✅ Complete standalone log for the Profile feature specifically; superseded/summarized (not replaced) by this Progress.md and BRD.md |
-| `README.md` | ⚠️ Generic Laravel framework boilerplate — contains no project-specific information about GHP |
-| `BRD.md` (this update) | ✅ Created/updated 2026-09-24, based on actual code + `task.md` |
-| `Progress.md` (this update) | ✅ Created/updated 2026-09-24, based on actual code + `task.md` |
-| `.env.example` | ⚠️ Needs Review — missing documentation for `LEGACY_DB_*` variables actually required by the legacy import command |
+| `task.md` | ✅ Updated 2026-10-12 — §2.35 added; §2.32–§2.34 marked SUPERSEDED |
+| `Progress.md` (this file) | ✅ Updated 2026-10-12 |
+| `BRD.md` | ✅ Updated 2026-10-12 |
+| `README.md` | ✅ Replaced the Laravel boilerplate with a GHP-specific overview |
+| `profile_features.md` | ✅ Still accurate (Profile feature only); status line refreshed |
+| `.env.example` | ⚠️ Still missing `LEGACY_DB_*` |
 
 ---
 
 ## Next Recommended Development Tasks
 
-Ordered by what `task.md` itself flags as most urgent, strictly grounded in the current project state:
-
-1. **Run `php artisan migrate` and `php artisan test`** in this environment and resolve any failures — this is a prerequisite for trusting anything else on this list, since several recent changes are explicitly unverified.
-2. **Manually verify the reimbursement receipt Print/Download PDF** (`BenefitPeriodController::reimbursementsPdf()`), since the missing-view bug fix has not been manually confirmed.
-3. **Watch for and resolve any unique-constraint error** from the Void-feature revert migration, which would indicate an ambiguous voided-duplicate benefit-period row that needs a manual data decision.
-4. **Add automated test coverage for `ImportLegacyGhpData`** — the last open item from the original "thin test coverage" review.
-5. **Decide on and clean up `_removed-by-claude/`** — either permanently delete it, or explicitly confirm nothing in it (the orphaned Member export feature, the reverted Void/Delete feature) is coming back before doing so.
-6. **Document `LEGACY_DB_*` in `.env.example`** so the legacy import command's configuration isn't undiscoverable without reading source.
-7. Consider (business-owner decision required, not a unilateral dev task): a Division CRUD screen, self-service password reset, login rate limiting, and session invalidation on password change — all explicitly flagged as not-yet-implemented in `task.md §4`.
+1. Run `php artisan migrate`, then the tests above; fix whatever fails (start with `BenefitPeriodRecordTest`, `CoverageSetupTest`, `GenerateBenefitPeriodButtonTest`).
+2. Walk the 8-step workflow in the browser and compare the member page, drill-down, receipt PDF and Annual report.
+3. Check the migration backfill on a copy of live data.
+4. Decide what to do with the remaining items from the specification review: show the full reimbursement history on the member page (currently the latest 20), and finish or drop the unused `dependent_fund_increases` table.
+5. Update the stale comments in `BulkBenefitPeriodGenerator` / `AutoGenerateBenefitPeriods`.
+6. Add tests for `ImportLegacyGhpData`; document `LEGACY_DB_*` in `.env.example`.
+7. Delete `_removed-by-claude/` once nothing in it is needed.
+8. Business-owner decisions still open: Division CRUD, forgot-password, login rate limiting, session invalidation on password change.
 
 ---
 
-*This document was generated by analyzing `task.md`, `profile_features.md`, and the actual `ghp-app` source code (migrations, controllers, models, services, tests) as of 2026-09-24. Status markers reflect verified implementation state, distinguishing "code exists" from "confirmed working/tested" wherever `task.md` itself flagged that distinction.*
+*Generated from `task.md`, `BRD.md`, `profile_features.md` and the `ghp-app` source as of 2026-10-12. "Implemented" means the code exists; "not yet run" means it has not been confirmed to execute.*

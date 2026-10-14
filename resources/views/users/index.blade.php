@@ -5,6 +5,10 @@
 @php
     $hasUserErrors = $errors->any() && $errors->has('email');
     $hasDepartmentErrors = $errors->any() && old('_form') === 'department';
+    $hasDivisionErrors = $errors->any() && old('_form') === 'division';
+    // Department / Division names are not unique (task.md §2.36): a repeated name is shown
+    // with its "#id" (option_label), and every form submits the record's id.
+    $divisionLabels = $divisions->pluck('option_label', 'id');
 @endphp
 
 @section('content')
@@ -99,15 +103,66 @@
                     @foreach ($departments as $department)
                         <tr>
                             <td class="code">{{ $department->id }}</td>
-                            <td>{{ $department->name }}</td>
-                            <td>{{ $department->division->name ?? '—' }}</td>
+                            <td>{{ $department->option_label }}</td>
+                            <td>{{ $department->division_id ? ($divisionLabels[$department->division_id] ?? $department->division->name) : '—' }}</td>
                             <td style="white-space: nowrap;">
                                 <button type="button" class="btn btn-ghost" style="padding: 4px 10px; font-size: 12px;"
-                                    onclick="openEditDepartment({{ $department->id }}, {{ json_encode($department->name) }}, {{ json_encode($department->division->name ?? '') }})">
+                                    onclick="openEditDepartment({{ $department->id }}, {{ json_encode($department->name) }}, {{ json_encode($department->division_id ? (string) $department->division_id : '') }})">
                                     Edit
                                 </button>
                                 <form method="POST" action="{{ route('departments.destroy', $department) }}" style="display: inline;"
-                                    onsubmit="return confirm('Delete the {{ $department->name }} department?{{ $department->members()->exists() ? ' '.$department->members()->count().' member(s) are currently assigned to it — they will be unassigned, not deleted.' : '' }}');">
+                                    onsubmit="return confirm('Delete the {{ $department->name }} department (ID {{ $department->id }})?{{ $department->members_count > 0 ? ' '.$department->members_count.' member(s) are currently assigned to it — they will be unassigned, not deleted.' : '' }}');">
+                                    @csrf
+                                    @method('DELETE')
+                                    <button type="submit" class="btn btn-ghost" style="padding: 4px 10px; font-size: 12px; color: var(--danger);">Delete</button>
+                                </form>
+                            </td>
+                        </tr>
+                    @endforeach
+                </tbody>
+            </table>
+        @endif
+    </div>
+
+    {{-- Division Management. Names are NOT unique (task.md §2.36): two divisions may share a name and are told apart by ID. Every action below goes by the record's id. --}}
+    <div class="card">
+        <div class="card-head">
+            <div>
+                <span class="eyebrow">{{ $divisions->count() }} division(s)</span>
+                <h2>Division Management</h2>
+            </div>
+            <button type="button" class="btn btn-primary" onclick="openAddDivision()">+ Add division</button>
+        </div>
+
+        @if ($divisions->isEmpty())
+            <div class="empty-state"><p>No divisions yet.</p></div>
+        @else
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Division</th>
+                        <th>Type</th>
+                        <th class="num">Departments</th>
+                        <th class="num">Members</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach ($divisions as $division)
+                        <tr data-division-id="{{ $division->id }}">
+                            <td class="code">{{ $division->id }}</td>
+                            <td>{{ $division->option_label }}</td>
+                            <td>{{ $division->member_type === \App\Models\Member::MEMBER_TYPE_AGENT ? 'Agent' : 'Employee' }}</td>
+                            <td class="num">{{ $division->departments_count }}</td>
+                            <td class="num">{{ $division->members_count }}</td>
+                            <td style="white-space: nowrap;">
+                                <button type="button" class="btn btn-ghost" style="padding: 4px 10px; font-size: 12px;"
+                                    onclick="openEditDivision({{ $division->id }}, {{ json_encode($division->name) }}, {{ $division->member_type }})">
+                                    Edit
+                                </button>
+                                <form method="POST" action="{{ route('divisions.destroy', $division) }}" style="display: inline;"
+                                    onsubmit="return confirm('Delete the {{ $division->name }} division (ID {{ $division->id }})?{{ ($division->members_count + $division->departments_count) > 0 ? ' '.$division->members_count.' member(s) and '.$division->departments_count.' department(s) currently use it — they will be unassigned from it, not deleted. Other divisions with the same name are not affected.' : '' }}');">
                                     @csrf
                                     @method('DELETE')
                                     <button type="submit" class="btn btn-ghost" style="padding: 4px 10px; font-size: 12px; color: var(--danger);">Delete</button>
@@ -245,13 +300,15 @@
 
                 <div class="field" style="margin-bottom: 0;">
                     <label for="department_division">Division</label>
-                    <input type="text" id="department_division" name="division" list="division-options" value="{{ old('division') }}" placeholder="Type a division name, or leave blank">
-                    <datalist id="division-options">
+                    <select id="department_division" name="division_id">
+                        <option value="">— None —</option>
                         @foreach ($divisions as $division)
-                            <option value="{{ $division->name }}">
+                            <option value="{{ $division->id }}" @selected((string) old('division_id') === (string) $division->id)>
+                                {{ $division->option_label }} ({{ $division->member_type === \App\Models\Member::MEMBER_TYPE_AGENT ? 'Agent' : 'Employee' }})
+                            </option>
                         @endforeach
-                    </datalist>
-                    <p class="hint" style="margin-top: 4px;">Existing names show as suggestions as you type. A name that doesn't match anything creates a new division automatically (as an Employee division — there's no way to set Agent from this field yet).</p>
+                    </select>
+                    <p class="hint" style="margin-top: 4px;">Divisions are managed in the Division Management card above. The division is saved by its ID, so divisions that share a name can be told apart.</p>
                 </div>
             </div>
 
@@ -276,18 +333,93 @@
             departmentModal.showModal();
         }
 
-        function openEditDepartment(id, name, divisionName) {
+        function openEditDepartment(id, name, divisionId) {
             document.getElementById('departmentModalTitle').textContent = 'Edit department';
             document.getElementById('departmentForm').action = departmentUpdateUrlBase + '/' + id;
             document.getElementById('departmentFormMethod').value = 'PUT';
             document.getElementById('departmentFormSubmit').textContent = 'Update department';
             document.getElementById('department_name').value = name;
-            document.getElementById('department_division').value = divisionName || '';
+            document.getElementById('department_division').value = divisionId || '';
             departmentModal.showModal();
         }
 
         @if ($hasDepartmentErrors)
             departmentModal.showModal();
+        @endif
+    </script>
+
+    {{-- Add/Edit division modal (shared). Names are not unique (task.md §2.36); the record is addressed by its id. --}}
+    <dialog id="divisionModal" class="modal">
+        <form method="POST" action="{{ route('divisions.store') }}" id="divisionForm">
+            @csrf
+            <input type="hidden" name="_form" value="division">
+            <input type="hidden" name="_method" id="divisionFormMethod" value="POST">
+
+            <div class="modal-head">
+                <h2 id="divisionModalTitle">Add division</h2>
+                <button type="button" class="modal-close" onclick="divisionModal.close()" aria-label="Close">&times;</button>
+            </div>
+
+            <div class="modal-body">
+                @if ($hasDivisionErrors)
+                    <div class="field">
+                        <p class="error" style="font-weight: 600;">Please fix the following:</p>
+                        <ul style="margin: 4px 0 0; padding-left: 18px; color: var(--danger); font-size: 13px;">
+                            @foreach ($errors->all() as $error)
+                                <li>{{ $error }}</li>
+                            @endforeach
+                        </ul>
+                    </div>
+                @endif
+
+                <div class="field">
+                    <label for="division_name">Division name</label>
+                    <input type="text" id="division_name" name="name" value="{{ old('_form') === 'division' ? old('name') : '' }}" required>
+                    <p class="hint" style="margin-top: 4px;">Another division may already use this name — that is allowed. Each division has its own ID.</p>
+                </div>
+
+                <div class="field" style="margin-bottom: 0;">
+                    <label>Member type</label>
+                    <div class="radio-group" style="flex-direction: row; gap: 20px;">
+                        <label><input type="radio" name="member_type" value="0" @checked(old('_form') !== 'division' || (string) old('member_type', '0') === '0')> Employee</label>
+                        <label><input type="radio" name="member_type" value="1" @checked(old('_form') === 'division' && (string) old('member_type') === '1')> Agent</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="modal-foot">
+                <button type="button" class="btn btn-ghost" onclick="divisionModal.close()">Cancel</button>
+                <button type="submit" class="btn btn-primary" id="divisionFormSubmit">Save division</button>
+            </div>
+        </form>
+    </dialog>
+
+    <script>
+        const divisionStoreUrl = '{{ route('divisions.store') }}';
+        const divisionUpdateUrlBase = '{{ url('divisions') }}';
+
+        function openAddDivision() {
+            document.getElementById('divisionModalTitle').textContent = 'Add division';
+            document.getElementById('divisionForm').action = divisionStoreUrl;
+            document.getElementById('divisionFormMethod').value = 'POST';
+            document.getElementById('divisionFormSubmit').textContent = 'Save division';
+            document.getElementById('division_name').value = '';
+            document.querySelector('#divisionForm input[name="member_type"][value="0"]').checked = true;
+            divisionModal.showModal();
+        }
+
+        function openEditDivision(id, name, memberType) {
+            document.getElementById('divisionModalTitle').textContent = 'Edit division';
+            document.getElementById('divisionForm').action = divisionUpdateUrlBase + '/' + id;
+            document.getElementById('divisionFormMethod').value = 'PUT';
+            document.getElementById('divisionFormSubmit').textContent = 'Update division';
+            document.getElementById('division_name').value = name;
+            document.querySelector('#divisionForm input[name="member_type"][value="' + memberType + '"]').checked = true;
+            divisionModal.showModal();
+        }
+
+        @if ($hasDivisionErrors)
+            divisionModal.showModal();
         @endif
     </script>
 @endsection

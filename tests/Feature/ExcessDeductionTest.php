@@ -591,15 +591,22 @@ class ExcessDeductionTest extends TestCase
         $admin = $this->admin();
 
         // Screen tables: member page + coverage-year records page.
-        foreach ([
-            route('members.show', $member),
-            route('members.benefit-periods.reimbursements', [$member, $period]),
-        ] as $url) {
-            $page = $this->actingAs($admin)->get($url)->assertOk()->getContent();
+        //
+        // Member page: the REIMBURSEMENTS table's column is "Remaining GHP". The page's
+        // Benefit periods table has its OWN "Available GHP" column (the cycle's balance —
+        // a different figure), so the old label is only forbidden next to Excess Deduction.
+        $memberPage = $this->actingAs($admin)->get(route('members.show', $member))->assertOk()->getContent();
 
-            $this->assertStringContainsString('Remaining GHP</th>', $page);
-            $this->assertStringNotContainsString('Available GHP</th>', $page);
-        }
+        $this->assertMatchesRegularExpression('/<th class="num">Remaining GHP<\/th>\s*<th class="num">Excess Deduction<\/th>/', $memberPage);
+        $this->assertDoesNotMatchRegularExpression('/Available GHP<\/th>\s*<th class="num">Excess Deduction<\/th>/', $memberPage);
+
+        // Records page: every table there is a reimbursement table, so the old label is gone entirely.
+        $recordsPage = $this->actingAs($admin)
+            ->get(route('members.benefit-periods.reimbursements', [$member, $period]))
+            ->assertOk()->getContent();
+
+        $this->assertStringContainsString('Remaining GHP</th>', $recordsPage);
+        $this->assertStringNotContainsString('Available GHP</th>', $recordsPage);
 
         // Email body.
         $this->actingAs($admin)->post(route('members.benefit-periods.reimbursements.send', [$member, $period]));

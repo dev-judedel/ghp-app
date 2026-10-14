@@ -10,6 +10,7 @@ use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DataQualityController;
 use App\Http\Controllers\DependentController;
 use App\Http\Controllers\DepartmentController;
+use App\Http\Controllers\DivisionController;
 use App\Http\Controllers\MemberController;
 use App\Http\Controllers\MemberImportController;
 use App\Http\Controllers\ProfileController;
@@ -89,6 +90,11 @@ Route::middleware(['auth', 'active'])->group(function () {
         Route::post('/departments', [DepartmentController::class, 'store'])->name('departments.store');
         Route::put('/departments/{department}', [DepartmentController::class, 'update'])->name('departments.update');
         Route::delete('/departments/{department}', [DepartmentController::class, 'destroy'])->name('departments.destroy');
+
+        // Division names are not unique (task.md §2.36): every route identifies a division by its id.
+        Route::post('/divisions', [DivisionController::class, 'store'])->name('divisions.store');
+        Route::put('/divisions/{division}', [DivisionController::class, 'update'])->name('divisions.update');
+        Route::delete('/divisions/{division}', [DivisionController::class, 'destroy'])->name('divisions.destroy');
 
         Route::get('/activity', [ActivityLogController::class, 'index'])->name('activity.index');
 

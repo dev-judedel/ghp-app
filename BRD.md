@@ -1,8 +1,8 @@
 # Business Requirements Document (BRD)
 
 **Project:** GHP — Group Health Plan Management System (`ghp-app`)
-**Document version:** 1.0
-**Last updated:** 2026-09-29
+**Document version:** 1.2
+**Last updated:** 2026-10-14
 **Source of truth:** Actual application code, database migrations, routes, and `task.md` as of the date above.
 
 ---
@@ -72,13 +72,13 @@ Based on the current implementation, the system's objectives are to:
 | Member search & filtering | Live (AJAX) search by code/last name/first name; filters by type, department, division, status; results paginated (25/page) |
 | Member CSV import | Bulk member creation from an uploaded CSV against a documented template, per-row validation, skipped-row reporting, 5,000-row cap |
 | Dependent management | Add/edit/delete dependents per member; age/relation-based eligibility rule; "pending until next coverage cycle" eligibility gating for dependents added mid-cycle |
-| Benefit period ("Coverage Year") accrual | Automatic monthly accrual calculation, one benefit period per member per coverage cycle (strict, DB-enforced), manual "Generate benefit period" trigger, scheduled daily auto-generation job |
+| Benefit period ("Coverage Year") accrual | Automatic monthly accrual calculation, a coverage cycle is generated exactly once (strict, DB-enforced) but holds one or more **Benefit Period records** (a record collects reimbursements until it is Claimed, then locks; the next filing opens a new record), Claim / Revert per record, manual "Generate benefit period" trigger, all-or-nothing bulk generation, scheduled daily auto-generation job |
 | GHP amount rules | ₱3,600/year base, ₱4,200/year with an eligible dependent, pro-rated by month from the deduction start date, 10% carry-forward of a prior fully-unused period |
 | Manual GHP amount adjustment | Admin can override the computed GHP amount with a reason/reference, sticks through future recalculation until explicitly reverted to automatic; full adjustment history retained |
-| Reimbursement management | File/edit reimbursement claims, OR number/date/amount/hospital/description/remarks, server-enforced "positive available GHP balance required, no maximum amount" rule, void/unvoid (with reason, keeps the record visible), automatic linking to the correct coverage-year benefit period |
+| Reimbursement management | File/edit reimbursement claims, OR number/date/amount/hospital/description/remarks, server-enforced "positive available GHP balance required, no maximum amount" rule, void/unvoid (with reason, keeps the record visible), automatic linking to the Benefit Period record that received it, automatic Excess GHP, one-time submission tokens against duplicate filing |
 | Coverage Year History drill-down | View and print/download (PDF, company letterhead) the reimbursements tied to one specific benefit period |
 | Department management | Create/edit/delete departments, free-text division assignment (auto-creates or reuses a Division by name) |
-| Division data | Divisions exist as a lookup table (Employee/Agent-scoped) but have **no dedicated CRUD UI** — see §3.2 |
+| Division management | Add / edit / delete Divisions (Employee/Agent-scoped) on the Users page; Department and Division names are not unique — records are told apart by id |
 | User management (admin) | Create/edit users, auto-generated user code, role (`admin`/`user`), Active/Inactive status, hard delete, last-remaining-admin safeguards |
 | Reports | Annual GHP report (PDF + CSV, filterable by type/department/division/status/year), Reimbursement report (PDF + CSV, date range + filters), Member Data Record (PDF, per-member) |
 | Data Quality Report | Admin-only report flagging corrupted benefit-period dates, ₱0-amount active members, active members missing a current-cycle benefit period, and (best-effort) legacy orphan-record counts |
@@ -90,7 +90,6 @@ Based on the current implementation, the system's objectives are to:
 
 | Feature | Status |
 |---|---|
-| Division CRUD (dedicated Add/Edit/Delete UI for Divisions) | Not implemented — only assignable by name via Department Management, or seeded/created via Tinker |
 | Self-service "forgot password" (password-reset email flow) | Not implemented — only login exists; a locked-out user needs an admin to reset their password via the Users screen |
 | Rate limiting on the login route | Not implemented — `POST /login` has no throttle middleware |
 | Session invalidation on password change | Not implemented — an old session remains valid after a user changes their password |
@@ -180,6 +179,8 @@ Requirement IDs are grouped by module. "Status" reflects the **actual current im
 | FR-MEM-011 | An admin can export the member list (CSV/PDF/Excel). | Member Mgmt / Export | ❌ Removed at client request — not in active application |
 | FR-MEM-012 | When adding a member, an admin can set and edit the GHP Benefit Setup: **Coverage year, Apply date, End date, Start date (deductions) and GHP amount**, with defaults from the standard cycle logic. Coverage year and End date are also editable on Edit member. All are validated server-side (End date after Apply date; Coverage year consistent with the cycle's start; Apply date inside the cycle; GHP amount a non-negative amount with at most 2 decimals). | Member Mgmt / Benefit Setup | ✅ Implemented (tests not yet run) |
 | FR-MEM-013 | A member with no configured coverage period (all existing and imported members) keeps the standard member-type cycle; a configured period can be changed but not cleared. | Member Mgmt / Benefit Setup | ✅ Implemented (tests not yet run) |
+| FR-MEM-015 | A deactivated member is read-only: every action that creates, edits, removes, voids or processes that member's records is rejected on the server (`member.active` middleware) and disabled in the UI; existing records stay viewable, printable and downloadable; reactivating does not replay anything blocked. | Member Mgmt | ⚠️ Implemented (tests not yet run) |
+| FR-MEM-016 | The CSV import validates each row with the real Add Member rules, rejects duplicate emails/codes (within the file and against existing members, including inactive ones) and never modifies an existing member. | Member Mgmt / Import | ⚠️ Implemented (tests not yet run) |
 | FR-MEM-014 | Changing a member's End date is refused if it would partly overlap a benefit period that has already been generated; generated benefit and deduction history is never deleted, re-dated or overwritten by a configuration change. | Member Mgmt / Benefit Setup | ✅ Implemented (tests not yet run) |
 
 ### 5.4 Dependent Management (DEP)
@@ -201,7 +202,12 @@ Requirement IDs are grouped by module. "Status" reflects the **actual current im
 | FR-BEN-003 | Accrual is pro-rated monthly from the member's `deduction_start_date`, counting whole calendar months elapsed within the current cycle. | Benefit Accrual | ✅ Implemented |
 | FR-BEN-004 | A prior coverage year's unused GHP amount carries forward at 10%, but only if that prior period had zero usage. | Benefit Accrual | ✅ Implemented |
 | FR-BEN-005 | An admin can manually trigger generation of the current cycle's benefit period for a member (individually or in bulk). | Benefit Accrual | ✅ Implemented |
-| FR-BEN-006 | Exactly one benefit period may exist per member per coverage cycle; the system rejects (does not silently overwrite) attempts to generate a second one for an already-generated cycle. | Benefit Accrual | ✅ Implemented, enforced at the database level (unique constraint) and application level (locked-transaction check) |
+| FR-BEN-006 | A coverage cycle is generated exactly once per member: Generate (single and bulk) rejects, and never silently refreshes, a cycle that already has any record. Bulk generation is all-or-nothing: if any selected member already has the period or is ineligible, nothing is generated and the blockers are listed. | Benefit Accrual | ✅ Implemented (tests not yet run); database unique key `(member_id, from_date, to_date, record_no)` plus a locked-transaction check |
+| FR-BEN-010 | A cycle can hold several **Benefit Period records** (`record_no` 1, 2, 3 …) for the same member and coverage period. One Unclaimed record collects every reimbursement filed until it is Claimed. | Benefit Accrual | ⚠️ Implemented 2026-10-12 (migration + tests not yet run) |
+| FR-BEN-011 | A new record is created only when a reimbursement is filed and every existing record of the cycle is Claimed; it is never created empty or in advance, and never reuses a Claimed record. | Benefit Accrual | ⚠️ Implemented (tests not yet run) |
+| FR-BEN-012 | A new record never grants a new entitlement: the cycle's entitlement and Available balance are computed once; each record stores only its own share of Used. Anything that needs the cycle's figures (member page, Annual GHP report, Member Data Record) reads them through one summary that counts the entitlement once. | Benefit Accrual | ⚠️ Implemented (tests not yet run) |
+| FR-BEN-013 | An admin can Claim a Benefit Period record (only if it has an active reimbursement) and Revert a Claimed record (only the latest record of its cycle). Each acts on one record only, is race-safe under a row lock, re-validated on the server, and writes one audit entry. Neither changes any amount, excess figure, reimbursement or other record. | Benefit Accrual | ⚠️ Implemented (tests not yet run) |
+| FR-BEN-014 | A Claimed record is locked: its reimbursements cannot be edited, voided or un-voided; a later GHP adjustment or dependent increase never covers its excess; reverting an adjustment that covered a Claimed record is refused until that record is reverted. | Benefit Accrual | ⚠️ Implemented (tests not yet run) |
 | FR-BEN-007 | Benefit periods for all active members with a deduction start date are automatically kept current by a scheduled daily job. | Benefit Accrual | ✅ Implemented (registered; depends on an external OS-level scheduler trigger — see NFR/Technical notes) |
 | FR-BEN-008 | An admin can void a benefit period and regenerate a fresh one for the same cycle, and/or delete a voided period. | Benefit Accrual | ❌ **Built, then fully reverted** at explicit client request — not in the active application |
 | FR-BEN-009 | An admin can directly correct a benefit period's stored figures (e.g. to fix corrupted historical data), independent of the accrual engine. | Benefit Accrual / Data Quality | ✅ Implemented (via Data Quality Report) |
@@ -215,11 +221,13 @@ Requirement IDs are grouped by module. "Status" reflects the **actual current im
 | FR-REIMB-003 | An admin can void a reimbursement with a required reason; a voided reimbursement stays visible on record but no longer counts against the fund. | Reimbursements | ✅ Implemented |
 | FR-REIMB-004 | An admin can unvoid a previously voided reimbursement, restoring it against the fund balance. | Reimbursements | ✅ Implemented |
 | FR-REIMB-005 | Editing a voided reimbursement is blocked until it is unvoided first. | Reimbursements | ✅ Implemented |
-| FR-REIMB-006 | Each reimbursement is automatically linked to the benefit period whose coverage range contains its OR date, when that period exists. | Reimbursements | ✅ Implemented |
+| FR-REIMB-006 | Each reimbursement is linked, when filed, to the Benefit Period record that receives it (the cycle's open record, or a new one when all are Claimed) and stays in that record; it never moves to a Claimed record. | Reimbursements | ⚠️ Implemented 2026-10-12 (tests not yet run) |
 | FR-REIMB-007 | Any authenticated user can view and print/download (PDF, company letterhead) the reimbursement history for one specific coverage-year benefit period. | Reimbursements | ✅ Implemented |
-| FR-REIMB-008 | An admin can record an **excess deduction** for a benefit period: actual deduction above the required monthly GHP (period GHP amount ÷ 12), e.g. required ₱300, actual ₱500, excess ₱200. Required and excess are computed by the server; nothing is recorded unless actual > required. One record per member + benefit period + deduction month; optionally associated with one active reimbursement (a reimbursement can have at most one). Removable by an admin; every record/removal is activity-logged. | Excess Deductions | ✅ Implemented (tests not yet run) |
-| FR-REIMB-009 | Excess deductions are tracking records only: they never change GHP usage, Available GHP, the GHP amount, monthly GHP or required amount, are not reimbursements or GHP contributions, and are not added to any reimbursement total. | Excess Deductions | ✅ Implemented (no GHP calculation reads them) |
-| FR-REIMB-010 | Reimbursement records (member page and coverage-year records page) mark **only** reimbursements associated with an excess deduction in red, with the excess amount and month, and the records page lists the excess records separately. The PDF receipt (print/download/email attachment) shows a red Excess Deduction section only when one applies; a receipt without one is unchanged. | Excess Deductions | ✅ Implemented (tests not yet run). The Reports-page reimbursement report and the email body do not show them |
+| FR-REIMB-008 | **Automatic Excess GHP.** When a claim is above the member's Available GHP at filing, the server stores `available_ghp` and `excess_amount = amount − Available GHP` on the reimbursement itself (e.g. ₱3,000 available / ₱5,000 claim → ₱2,000 excess; the full ₱5,000 is kept). Nothing is entered by hand. An edit recalculates the same record against the Available GHP recorded when it was filed. *(Supersedes the manual "Record excess deduction" feature, removed 2026-09-30; its table and rows are kept read-only.)* | Excess GHP | ⚠️ Implemented (tests not yet run) |
+| FR-REIMB-011 | A dependent becoming eligible (Immediate Eligibility) or a GHP amount adjustment first covers the member's outstanding Excess GHP with the actual growth of the fund (months rendered × new rate − months rendered × old rate), oldest claim first, never more than the increase or the excess; the rest stays in Available GHP. Used GHP and the reimbursement amount never change. Claimed records are skipped. | Excess GHP | ⚠️ Implemented (tests not yet run) |
+| FR-REIMB-012 | A repeated submission of the same filing (double click, re-sent request) records one reimbursement: the form's one-time token is checked under the member lock before the balance check, with a unique index as backstop. | Reimbursements | ⚠️ Implemented (tests not yet run) |
+| FR-REIMB-009 | Excess GHP is tracking only: it is not added to GHP usage, not subtracted from Available GHP, and never changes the GHP amount, monthly GHP or required amount. | Excess GHP | ⚠️ Implemented (tests not yet run) |
+| FR-REIMB-010 | Only claims with an Excess GHP above zero are marked red (member page, records page, receipt PDF, reimbursement report PDF, Member Data Record, email); the CSV has separate Remaining GHP / Original Excess / Excess Covered / Excess Deduction columns. Columns read Amount, Remaining GHP, Excess Deduction, Status. | Excess GHP | ⚠️ Implemented (tests not yet run) |
 
 ### 5.7 GHP Amount Adjustment (ADJ)
 
@@ -229,15 +237,19 @@ Requirement IDs are grouped by module. "Status" reflects the **actual current im
 | FR-ADJ-002 | A manual override persists through future recalculation (dependent changes, benefit-period generation) until explicitly reverted. | Amount Adjustment | ✅ Implemented |
 | FR-ADJ-003 | An admin can revert a member from a manual override back to the automatically computed amount. | Amount Adjustment | ✅ Implemented |
 | FR-ADJ-004 | Every adjustment (manual and revert-to-automatic) is recorded in a structured, queryable history table. | Amount Adjustment | ✅ Implemented |
+| FR-ADJ-005 | An increase is treated like an eligible dependent (see FR-REIMB-011) and tracked in an `excess_coverages` ledger so it can be undone exactly. | Amount Adjustment | ⚠️ Implemented (tests not yet run) |
+| FR-ADJ-006 | An admin can revert just the member's latest active adjustment: only that adjustment's covered excess is restored, the amount returns to what it was before it, Used GHP and reimbursement amounts are untouched. An earlier adjustment under a later one cannot be reverted on its own. | Amount Adjustment | ⚠️ Implemented (tests not yet run) |
 
 ### 5.8 Department & Division (DEPT)
 
 | ID | Requirement | Module | Status |
 |---|---|---|---|
 | FR-DEPT-001 | An admin can create, edit, and delete a Department. | Departments | ✅ Implemented |
-| FR-DEPT-002 | A Department can be assigned to a Division by free-text name; an unrecognized name auto-creates a new (Employee-type-defaulted) Division. | Departments | ✅ Implemented |
+| FR-DEPT-002 | A Department is assigned to a Division by the Division's **id** (a select). The older free-text division name is still accepted when no id is sent: it matches case-insensitively, the lowest id wins if several share the name, and an unknown name creates an Employee Division. | Departments | ⚠️ Implemented 2026-10-14 (tests not yet run) |
 | FR-DEPT-003 | Deleting a Department un-assigns (does not delete) any members currently assigned to it. | Departments | ✅ Implemented (`nullOnDelete` FK) |
-| FR-DEPT-004 | An admin can directly create, edit, and delete Divisions (dedicated management screen). | Divisions | ❌ Not implemented — divisions can currently only be created indirectly via the Department form or seeded/created manually |
+| FR-DEPT-004 | An admin can create, edit and delete Divisions (name + Employee/Agent) on the Users page. Deleting one unassigns the departments and members that used it; it never deletes them. | Divisions | ⚠️ Implemented 2026-10-14 (tests not yet run) |
+| FR-DEPT-005 | Department names and Division names are **not unique**: several records may share a name, each with its own id. Names are still required (not empty). Create, edit, delete and member assignment always go by id, so changing or deleting one record never affects another with the same name. | Departments / Divisions | ⚠️ Implemented 2026-10-14 (migration + tests not yet run) |
+| FR-DEPT-006 | Wherever a Department or Division dropdown appears (Add / Edit member, member filter, report filters, Users page), the option value is the record's id and a name that repeats is shown with its "#id" so administrators can tell them apart. | Departments / Divisions | ⚠️ Implemented (tests not yet run) |
 
 ### 5.9 User Management (USR)
 
@@ -292,8 +304,15 @@ Requirement IDs are grouped by module. "Status" reflects the **actual current im
 | BR-008 | **Reimbursement Rule**: a reimbursement can be filed only when the member's available GHP balance for the coverage period containing its `or_date` is **greater than zero**; the amount is not compared with that balance and has no maximum (e.g. ₱1,000 available / ₱5,000 claim is allowed; ₱0 available is not). Editing an already-filed claim within the same period is always allowed; moving it to another period counts as a new filing. Enforced inside a row-locked database transaction so two near-simultaneous submissions are each validated against the current balance. |
 | BR-009 | A **voided** reimbursement is excluded entirely from the "used" calculation (not merely capped) but remains visible on the member's record with its void reason and who voided it. |
 | BR-010 | The displayed "used" figure is capped at what the fund can cover (accrued + carry-forward), so Available GHP floors at ₱0 and is never negative, while the full claimed amount is always preserved on the reimbursement record itself (a ₱10,000 claim against ₱3,600 shows Used ₱3,600 / Available ₱0 with the record still at ₱10,000). This is the existing calculation, unchanged. |
-| BR-020 | **Excess deduction**: excess = actual deduction − required monthly GHP (period GHP amount ÷ 12), recorded only when positive, at most once per member + benefit period + month. It is a separate tracking record: it is never added to GHP usage, never subtracted from Available GHP, never treated as a reimbursement or contribution, and never changes the GHP amount, monthly GHP or required amount. |
-| BR-011 | **Strict one-generation-per-cycle rule**: once a benefit period exists for a member's current coverage cycle, it cannot be voided, deleted, or regenerated — the "Generate benefit period" action becomes available again only when the next cycle actually begins. Enforced by a unique database constraint on `(member_id, from_date, to_date)`. |
+| BR-020 | **Excess GHP** = reimbursement amount − Available GHP at filing, recorded only when positive, on the reimbursement itself (one figure per claim). It is tracking only: never added to GHP usage, never subtracted from Available GHP, and it never changes the GHP amount, monthly GHP or required amount. A later dependent increase or GHP adjustment covers it from the actual fund growth (BR-024). |
+| BR-021 | **Benefit Period records.** A coverage cycle can hold several records for one member (`record_no`). One Unclaimed record collects every reimbursement filed until it is Claimed; Claiming locks that record only. The next reimbursement filed for the same cycle opens a new record, only when needed and only if the member still has a positive Available GHP. The claim state belongs to the individual record, not to the coverage year. |
+| BR-022 | **No new entitlement.** The cycle's entitlement and Available GHP exist once. A new record carries the cycle's remaining balance; each record stores only its own Used. Claiming does not deduct anything again. Reports read the cycle through one summary (entitlement once, Used summed, Available from the last record). |
+| BR-023 | **Claim / Revert.** Claim is refused for a record with no active reimbursement. Revert applies only to a Claimed record and only to the latest record of its cycle, so a cycle never has two open records; the reverted record becomes the open record again and accepts reimbursements. Neither action changes any amount, excess figure, reimbursement or other record. |
+| BR-024 | **Claimed = locked.** A reimbursement in a Claimed record cannot be edited, voided or un-voided; no later GHP adjustment or dependent increase covers its excess; reverting a GHP adjustment that covered a Claimed record is refused until that record is reverted. Reverting a record unlocks it for future increases only — nothing is covered retroactively. |
+| BR-025 | **Fund increase covers excess.** When a dependent becomes eligible or the GHP amount is raised, the increase = months rendered × new monthly rate − months rendered × old monthly rate (10 months: 3,600 → 4,200 is +₱500). It covers outstanding Excess GHP oldest claim first, capped by the excess; the rest stays in Available GHP. A decrease covers nothing. A dependent-driven cover is not reversed if the dependent is later removed. |
+| BR-026 | **Dependent removal guard.** A dependent cannot be removed while the member has any active (non-voided) reimbursement. |
+| BR-027 | **Deactivated member = read-only.** Every modifying action on a deactivated member is rejected; viewing, printing and downloading existing records still work; deactivating or reactivating changes no financial or dependent data. |
+| BR-011 | **Strict one-generation-per-cycle rule**: once a benefit period exists for a member's current coverage cycle, it cannot be voided, deleted, or regenerated — the "Generate benefit period" action becomes available again only when the next cycle actually begins. A cycle may later gain further **records** (BR-021) but only through filing a reimbursement, never through Generate. Enforced by a unique database constraint on `(member_id, from_date, to_date, record_no)` plus a locked existence check. |
 | BR-012 | A **manual GHP amount override** (`ghp_amount_is_manual = true`) causes the accrual engine to use the stored `ghp_amount` as-is, ignoring the dependent-based 3,600/4,200 calculation, until explicitly reverted to automatic. |
 | BR-013 | A member's or user's **code** (`ALSC-######`) is always system-generated unless an admin explicitly supplies one on member creation (members only — user codes are always system-generated with no override path). |
 | BR-014 | Deactivating a member **requires** a resignation date; reactivating a member **always clears** the resignation date regardless of what (if anything) is submitted. |
@@ -301,7 +320,7 @@ Requirement IDs are grouped by module. "Status" reflects the **actual current im
 | BR-016 | A deactivated user account is signed out **immediately**, even mid-session — not only blocked at the next login attempt. |
 | BR-017 | Member email is required and validated for new members but remains optional (nullable) for legacy/existing member records so that unrelated edits are not blocked. |
 | BR-018 | Deleting a Department does not delete its assigned members — they become unassigned (`department_id` set to `null`). |
-| BR-019 | An unrecognized Division name entered on the Department form auto-creates a new Division, always defaulted to member type **Employee** (there is no UI to specify Agent at creation time via this path). |
+| BR-019 | Department names and Division names are **not unique**; every record has its own id and relationships, and the id is what identifies it everywhere (forms, routes, member assignment). Deleting a Division or Department unassigns members, departments and benefit periods that pointed at it (`nullOnDelete`) — other records with the same name are untouched. The legacy free-text division name on the Department form picks the lowest id when several share it; the CSV import does the same. *(Supersedes the old rule that an unrecognized Division name auto-created an Employee Division as the only way to add one.)* |
 
 ---
 
@@ -314,13 +333,14 @@ Requirement IDs are grouped by module. "Status" reflects the **actual current im
 | `users` | System login accounts (Admin/Staff) | `user_code` (ALSC-######, unique), `name`, `email` (unique), `role` (admin/user), `is_active`, `profile_photo_path`, `password` |
 | `members` | Plan members (Employees/Agents) | `code` (ALSC-###### or legacy code, unique), `email` (nullable, unique), `member_type` (0=Employee,1=Agent), `last_name`, `first_name`, `middle_name`, `address`, `birthdate`, `civil_status`, `apply_date`, `start_date`, `deduction_start_date`, `ghp_amount`, `ghp_amount_is_manual`, `coverage_year` and `coverage_end_date` (nullable; NULL = standard member-type cycle), `is_active`, `resignation_date`, `division_id`, `department_id`, `old_code`, `remarks`; soft-deletable |
 | `dependents` | Members' dependents | `member_id`, `name`, `relation` (free text), `birthdate`, `date_added`, `eligibility_date` |
-| `divisions` | Division lookup (Employee/Agent scoped) | `member_type`, `name`; unique on `(member_type, name)` |
-| `departments` | Department lookup | `name` (unique), `division_id` |
-| `benefit_periods` | One row per member per coverage cycle — the authoritative accrual record | `member_id`, `from_date`, `to_date`, `coverage_year`, `ghp_amount`, `ghp_available`, `ghp_used`, `member_type`, `division_id`, `department_id`, `remarks`; unique on `(member_id, from_date, to_date)` |
+| `divisions` | Division lookup (Employee/Agent scoped) | `member_type`, `name` (not unique; plain index on `(member_type, name)`) |
+| `departments` | Department lookup | `name` (not unique; plain index), `division_id` |
+| `benefit_periods` | One row per **Benefit Period record** — a coverage cycle has one or more records per member | `member_id`, `from_date`, `to_date`, `record_no` (default 1), `coverage_year`, `ghp_amount` (the cycle's entitlement, same on every record), `ghp_used` (this record's own share), `ghp_available` (the cycle's remaining balance), `claimed_at`/`claimed_by`, `reverted_at`/`reverted_by`, `member_type`, `division_id`, `department_id`, `remarks`; unique on `(member_id, from_date, to_date, record_no)` |
 | `benefit_ledger` | Legacy-parallel ledger table (imported 1:1 from `t_avail_used_ghp`); kept separate from `benefit_periods` for import fidelity — flagged as a likely future merge candidate, not actively written to by the current application logic beyond import | `member_id`, `from_date`, `to_date`, `ghp_amount`, `available_amount`, `used_amount`; unique on `(member_id, from_date, to_date)` |
 | `benefit_amount_adjustments` | Structured audit trail for manual GHP amount overrides | `member_id`, `old_amount`, `new_amount`, `reason`, `request_reference`, `requested_at`, `recorded_by` |
-| `reimbursements` | Medical reimbursement claims | `member_id`, `benefit_period_id`, `or_no`, `or_date`, `or_amount`, `hospital_name`, `description`, `remarks`, `is_voided`, `voided_at`, `voided_reason`, `voided_by`; soft-deletable |
-| `excess_deductions` | Tracking-only record of an actual deduction above the required monthly GHP; never read by any GHP calculation | `member_id`, `benefit_period_id`, `reimbursement_id` (nullable, unique), `deduction_month`, `required_amount`, `actual_deduction`, `excess_amount`, `remarks`, `recorded_by`; unique on `(member_id, benefit_period_id, deduction_month)` |
+| `reimbursements` | Medical reimbursement claims | `member_id`, `benefit_period_id` (the record that received it), `or_no`, `or_date`, `or_amount`, `available_ghp`, `excess_amount`, `original_excess_amount`, `excess_covered_amount`, `hospital_name`, `description`, `remarks`, `submission_token` (unique), `is_voided`, `voided_at`, `voided_reason`, `voided_by`; soft-deletable. Its claim state is that of its record; the old `claimed_at`/`claimed_by`/`reverted_at`/`reverted_by` columns are retired (kept as history) |
+| `excess_deductions` | **Retired.** Historical manually recorded excess deductions, kept read-only; never read by any GHP calculation and nothing creates them any more (Excess GHP is now automatic, stored on `reimbursements`) | `member_id`, `benefit_period_id`, `reimbursement_id`, `deduction_month`, `required_amount`, `actual_deduction`, `excess_amount`, `remarks`, `recorded_by` |
+| `excess_coverages` | Reversal ledger: which GHP amount adjustment covered how much of which claim's excess | `member_id`, `reimbursement_id`, `benefit_amount_adjustment_id`, `amount`, `reversed_at` |
 | `agent_positions` | Agent VP/AVP position lookup (legacy-imported; matched by name, not FK'd to `members`) | `member_code`, `name`, `position` |
 | `activity_log` | System-wide audit trail (Spatie Activitylog) | logged on `User`, `Member`, `Dependent`, `Reimbursement`, `Department`, `BenefitPeriod`, plus unattached `auth`/`import`/`benefit_period` (scheduler) log entries |
 
@@ -328,7 +348,7 @@ Requirement IDs are grouped by module. "Status" reflects the **actual current im
 - `Member` 1—* `Dependent`, `BenefitPeriod`, `BenefitLedger`, `Reimbursement`, `BenefitAmountAdjustment`.
 - `Member` *—1 `Division`, *—1 `Department` (both nullable, `nullOnDelete`).
 - `Department` *—1 `Division` (nullable, `nullOnDelete`).
-- `Reimbursement` *—1 `BenefitPeriod` (nullable, `nullOnDelete`) — the Coverage Year History link.
+- `Reimbursement` *—1 `BenefitPeriod` (nullable, `nullOnDelete`) — the Benefit Period **record** that received it; `BenefitPeriod` 1—* `Reimbursement`. A member's cycle has 1—* `BenefitPeriod` records.
 - `Reimbursement` *—1 `User` via `voided_by` (nullable, `nullOnDelete`).
 - `BenefitPeriod`, `BenefitLedger`, `BenefitAmountAdjustment` all `restrictOnDelete` against their `Member` — a member cannot be hard-deleted while historical financial records reference it (soft delete is used instead).
 - `AgentPosition.member_code` is a **plain string**, intentionally not a foreign key to `members.code` (data-quality risk noted in Known Limitations).
@@ -361,7 +381,7 @@ Requirement IDs are grouped by module. "Status" reflects the **actual current im
 2. System locks the member row inside a transaction.
 3. System computes the member's available balance for the coverage period containing the OR date.
 4. If the member has no available balance (zero or negative) → validation error; nothing saved (BR-008). The amount itself is never compared with the balance.
-5. Otherwise, the reimbursement is created, the member's current benefit period is refreshed, and the reimbursement is linked to the matching benefit period.
+5. Otherwise the server picks the Benefit Period record that receives it: the cycle's open (Unclaimed) record, or — only when every record is Claimed — a new record for the same cycle. The Excess GHP is calculated, the reimbursement is saved linked to that record, and the open record's Used / Available are refreshed. This all happens in one transaction under the member lock, so a Claim arriving at the same moment either locks the record first (the filing then opens the next one) or waits until the filing is saved.
 
 ### 8.4 Voiding / Unvoiding a Reimbursement
 1. Admin voids a reimbursement with a required reason → record flagged `is_voided`, excluded from "used" going forward, benefit period refreshed.
@@ -393,6 +413,17 @@ Requirement IDs are grouped by module. "Status" reflects the **actual current im
 
 ---
 
+### 8.9 Claim and Revert of a Benefit Period record
+1. The member page lists one row per record (Period, GHP Amount, Used GHP, Available GHP, Status, Action) with that record's reimbursements underneath.
+2. Admin clicks **Claim** on a record that has at least one active reimbursement → the record becomes Claimed and locked; its reimbursements stay linked to it; nothing else changes and no empty record is created.
+3. The next reimbursement filed for the same cycle (if Available GHP is still positive) creates record #2 with the cycle's remaining balance — not a new entitlement — and links the reimbursement to it. Further filings join record #2 until it is Claimed.
+4. Admin clicks **Revert** on the cycle's latest Claimed record → it is unlocked and marked Reverted; it accepts reimbursements again; its history is untouched. An earlier Claimed record cannot be reverted while a later one exists.
+
+### 8.10 Specification scenario (entitlement ₱3,600; accrued fund in the test fixture ₱3,000)
+File 500, 700, 800 → one record holds all three (Used 2,000). Claim it → locked, no new row. File 600 → record #2 created. File 400 → joins record #2. Claim #2 → both Claimed, each with its own history. Revert #2 → only #2 reopens; five reimbursements remain linked as before.
+
+---
+
 ## 9. Non-Functional Requirements
 
 | ID | Category | Requirement | Status |
@@ -405,7 +436,7 @@ Requirement IDs are grouped by module. "Status" reflects the **actual current im
 | NFR-006 | Security | A password change invalidates other active sessions for that account. | ❌ Not implemented (known gap) |
 | NFR-007 | Data Integrity | Reimbursement and benefit-period writes that could race (concurrent submissions) are protected by row-level locking (`lockForUpdate()`) inside database transactions. | ✅ Implemented |
 | NFR-008 | Data Integrity | Financial history (`benefit_periods`, `benefit_ledger`, `benefit_amount_adjustments`) cannot be lost via member deletion — `restrictOnDelete` foreign keys and member soft-deletes protect this. | ✅ Implemented |
-| NFR-009 | Data Integrity | Exactly one benefit period may exist per member per coverage cycle, enforced by a database unique constraint (not just application logic). | ✅ Implemented |
+| NFR-009 | Data Integrity | A cycle is generated once, and a record can never be duplicated: the database unique key `(member_id, from_date, to_date, record_no)` backs the application checks; a Claim and a filing arriving together serialize on the member row lock. | ⚠️ Implemented (migration + tests not yet run) |
 | NFR-010 | Auditability | All create/update/delete-relevant changes to members, dependents, reimbursements, departments, benefit periods, and users are recorded with a timestamped, causer-attributed activity log entry (dirty-fields only, no-op changes not logged). | ✅ Implemented |
 | NFR-011 | Auditability | Password values themselves are never written into the activity log, even as a hash. | ✅ Implemented |
 | NFR-012 | Usability | The member list supports live/AJAX search without a full page reload. | ✅ Implemented |
@@ -452,8 +483,11 @@ Carried directly from the project's own tracked technical debt (`task.md §3`), 
 | `agent_positions.member_code` is a string match, not a foreign key | `AgentPosition` | A reformatted/typo'd code silently breaks the agent-position lookup used by the agent reimbursement report |
 | `dependents.relation` is free text, not an enum | `Dependent` | A typo in a relation value could silently affect eligibility calculations |
 | `.card-head` CSS does not wrap cleanly on narrow screens | `public/css/app.css` | Minor layout issue on some pages at small viewport widths; deliberately left untouched to avoid a shared-CSS regression |
-| No dedicated Division management UI | — | Divisions can only be created indirectly (via the Department form, always defaulted to Employee type) or manually via Tinker/seeder |
-| Several recent changes are marked "**Not yet run**" in `task.md` | Multiple (see Progress.md) | Migrations and/or their accompanying tests were written from code inspection but not confirmed to actually execute successfully in this environment as of the last update |
+| Member list rows and printouts show a Department / Division by name only | `members/_results`, PDFs | Two same-named records look alike there; the Edit member form shows which one is selected |
+| Many changes since 2026-09-24 are marked "**Not yet run**" in `task.md` (§2.14 – §2.35, including the Benefit Period records migration `2026_10_10_100000`) | Multiple (see Progress.md) | Migrations and tests were written from code inspection but not confirmed to execute in this environment; the browser behaviour has not been checked |
+| A dependent-driven excess cover is not reversed when the dependent is removed; the `dependent_fund_increases` table has no code behind it | `BenefitAccrualService` | Documented limitation |
+| The member page's Reimbursements card shows the latest 20 only | `MemberController::show()` | The complete history per record is in the Coverage Year History rows and the period drill-down |
+| The migration backfill marks a period Claimed only when every active reimbursement under it was claimed | `2026_10_10_100000_*` | Partly-claimed periods need an admin to claim them |
 
 ---
 
@@ -461,7 +495,6 @@ Carried directly from the project's own tracked technical debt (`task.md §3`), 
 
 Only items explicitly identified in `task.md`'s "Not implemented" list or clearly flagged as intentionally deferred are listed — nothing here is speculative:
 
-1. **Division CRUD** — a dedicated Add/Edit/Delete management screen for Divisions (currently only indirectly manageable).
 2. **Self-service password reset ("forgot password")** email-based flow.
 3. **Rate limiting on the login route.**
 4. **Session invalidation on password change**, for both self-service and admin-issued resets.
@@ -472,4 +505,4 @@ Only items explicitly identified in `task.md`'s "Not implemented" list or clearl
 
 ---
 
-*This document was generated by analyzing the actual `ghp-app` codebase (routes, controllers, models, migrations, form requests, services, and `task.md`) as of 2026-09-24. It supersedes any prior undocumented assumptions and should be re-validated against the codebase whenever significant feature work occurs.*
+*This document was generated by analyzing the actual `ghp-app` codebase (routes, controllers, models, migrations, form requests, services, and `task.md`) as of 2026-10-12. It supersedes any prior undocumented assumptions and should be re-validated against the codebase whenever significant feature work occurs.*

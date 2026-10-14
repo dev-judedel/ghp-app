@@ -38,7 +38,7 @@
                     <select id="ghp_division" name="division">
                         <option value="">All</option>
                         @foreach ($divisions as $division)
-                            <option value="{{ $division->id }}">{{ $division->name }} ({{ $division->member_type === \App\Models\Member::MEMBER_TYPE_AGENT ? 'Agent' : 'Employee' }})</option>
+                            <option value="{{ $division->id }}">{{ $division->option_label }} ({{ $division->member_type === \App\Models\Member::MEMBER_TYPE_AGENT ? 'Agent' : 'Employee' }})</option>
                         @endforeach
                     </select>
                 </div>
@@ -48,7 +48,7 @@
                     <select id="ghp_department" name="department">
                         <option value="">All</option>
                         @foreach ($departments as $department)
-                            <option value="{{ $department->id }}">{{ $department->name }}</option>
+                            <option value="{{ $department->id }}">{{ $department->option_label }}</option>
                         @endforeach
                     </select>
                 </div>
@@ -102,7 +102,7 @@
                     <select id="rb_division" name="division">
                         <option value="">All</option>
                         @foreach ($divisions as $division)
-                            <option value="{{ $division->id }}">{{ $division->name }} ({{ $division->member_type === \App\Models\Member::MEMBER_TYPE_AGENT ? 'Agent' : 'Employee' }})</option>
+                            <option value="{{ $division->id }}">{{ $division->option_label }} ({{ $division->member_type === \App\Models\Member::MEMBER_TYPE_AGENT ? 'Agent' : 'Employee' }})</option>
                         @endforeach
                     </select>
                 </div>
@@ -112,7 +112,7 @@
                     <select id="rb_department" name="department">
                         <option value="">All</option>
                         @foreach ($departments as $department)
-                            <option value="{{ $department->id }}">{{ $department->name }}</option>
+                            <option value="{{ $department->id }}">{{ $department->option_label }}</option>
                         @endforeach
                     </select>
                 </div>

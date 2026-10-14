@@ -115,7 +115,7 @@ class MemberController extends Controller
             // Each record carries its own reimbursements (the Coverage Year History groups them by record).
             'benefitPeriods' => fn ($q) => $q->orderByDesc('from_date')->orderBy('record_no')->orderBy('id')
                 ->with(['reimbursements' => fn ($r) => $r->orderBy('or_date')->orderBy('id'), 'claimedBy', 'revertedBy']),
-            'reimbursements' => fn ($q) => $q->orderByDesc('or_date')->limit(20)->with('excessCoverages'),
+            'reimbursements' => fn ($q) => $q->orderByDesc('or_date')->limit(20)->with('excessCoverages', 'benefitPeriod'),
             'amountAdjustments' => fn ($q) => $q->orderByDesc('requested_at'),
         ]);
 

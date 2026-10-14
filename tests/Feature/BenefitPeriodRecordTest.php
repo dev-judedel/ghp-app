@@ -484,10 +484,11 @@ class BenefitPeriodRecordTest extends TestCase
         $this->assertSame(2, substr_count($html, 'Apr 2026 &ndash; Mar 2027'));
         $this->assertSame(2, substr_count($html, 'data-record-reimbursements="'));
         $this->assertSame(3, substr_count($html, 'data-reimbursement-id="'));
-        $this->assertSame(2, substr_count($html, 'data-record-action="claim"'));
-        $this->assertSame(2, substr_count($html, 'data-record-action="revert"'));
-        // Claim is live only on the Unclaimed record; Revert only on the Claimed (and latest-of-its-cycle) one — here
-        // record 1 is Claimed but a later record exists, so no Revert is live.
+        // Only the NEWEST record of the cycle renders buttons (task.md §2.37): record 1 is Claimed but a
+        // newer record exists, so it shows none; record 2 has a live Claim and a disabled Revert.
+        $this->assertSame(1, substr_count($html, 'data-record-actions="none"'));
+        $this->assertSame(1, substr_count($html, 'data-record-action="claim"'));
+        $this->assertSame(1, substr_count($html, 'data-record-action="revert"'));
         $this->assertSame(1, preg_match_all('/<button[^>]*data-record-action="claim"(?![^>]*\bdisabled\b)[^>]*>/s', $html));
         $this->assertSame(0, preg_match_all('/<button[^>]*data-record-action="revert"(?![^>]*\bdisabled\b)[^>]*>/s', $html));
     }

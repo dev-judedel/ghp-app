@@ -17,8 +17,9 @@ class UserController extends Controller
     {
         return view('users.index', [
             'users' => User::orderBy('name')->get(),
-            'departments' => Department::with('division')->orderBy('name')->get(),
-            'divisions' => Division::orderBy('member_type')->orderBy('name')->get(),
+            // Names are not unique (task.md §2.36), so the id is the stable tiebreaker.
+            'departments' => Department::with('division')->withCount('members')->orderBy('name')->orderBy('id')->get(),
+            'divisions' => Division::withCount(['members', 'departments'])->orderBy('member_type')->orderBy('name')->orderBy('id')->get(),
         ]);
     }
 

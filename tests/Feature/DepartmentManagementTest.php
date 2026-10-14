@@ -70,13 +70,26 @@ class DepartmentManagementTest extends TestCase
         $this->assertNull($department->division_id);
     }
 
-    public function test_duplicate_department_name_is_rejected(): void
+    public function test_a_duplicate_department_name_is_allowed_and_gets_its_own_id(): void
     {
+        // Department names are no longer unique (task.md §2.36). Full coverage is in DuplicateNamesTest.
         $admin = User::factory()->create(['role' => 'admin', 'is_active' => true]);
-        Department::factory()->create(['name' => 'Engineering']);
+        $first = Department::factory()->create(['name' => 'Engineering']);
 
         $this->actingAs($admin)
             ->post(route('departments.store'), ['name' => 'Engineering'])
+            ->assertSessionHasNoErrors();
+
+        $this->assertSame(2, Department::where('name', 'Engineering')->count());
+        $this->assertNotSame($first->id, Department::where('name', 'Engineering')->where('id', '!=', $first->id)->value('id'));
+    }
+
+    public function test_an_empty_department_name_is_still_rejected(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin', 'is_active' => true]);
+
+        $this->actingAs($admin)
+            ->post(route('departments.store'), ['name' => ''])
             ->assertSessionHasErrors('name');
     }
 

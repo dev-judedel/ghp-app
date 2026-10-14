@@ -6,6 +6,8 @@ and change their password, using the existing GHP design system and auth setup.
 
 ## Status: Implemented — pending migration + storage link on your machine
 
+_Reviewed 2026-10-12: this log still matches the code and the profile feature is unchanged. For the wider project status see `Progress.md`; for history see `task.md`._
+
 ---
 
 ## 1. Findings from the existing codebase (before writing code)

@@ -1,58 +1,68 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# GHP — Group Health Plan Management System
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+`ghp-app` administers a company **Group Health Plan (GHP)** benefit fund for Employees and Agents. It replaces a legacy PostgreSQL-based system with a Laravel application on a normalized MySQL schema.
 
-## About Laravel
+It tracks members and dependents, accrues each member's annual GHP entitlement month by month, records medical reimbursement claims against the available balance, and produces reports and printable receipts.
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+**Last updated:** 2026-10-14
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+## What it does
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+- **Members and dependents** — Employee / Agent records, Active / Inactive status, live search and filters, CSV bulk import with duplicate detection. A deactivated member is read-only.
+- **Benefit accrual** — ₱3,600 a year, ₱4,200 with an eligible dependent, prorated by month over the member's coverage cycle (Employees Apr–Mar and Agents Jun–May by default, or a configured 12-month cycle), with a 10% carry-forward of a fully unused period.
+- **Benefit Period records** — a coverage cycle is generated once but can hold several records. One Unclaimed record collects every reimbursement filed until an administrator **Claims** it, which locks that record only. The next reimbursement filed for the same cycle opens a new record. A new record never grants a new entitlement. **Revert** reopens the latest Claimed record.
+- **Reimbursements** — filing needs a positive Available GHP but the amount has no cap. A claim above the Available GHP gets an automatic **Excess GHP** (shown in red). A dependent becoming eligible or a GHP amount increase first covers outstanding excess. Void / unvoid, printable and emailable PDF receipts.
+- **GHP amount adjustments** — manual override with a reason, revert to automatic, or revert only the latest adjustment.
+- **Reports** — Annual GHP (PDF/CSV), Reimbursements (PDF/CSV), Member Data Record (PDF), Data Quality Report, Activity Log.
+- **Accounts** — admin and staff roles, self-service profile and password change, user management with last-admin safeguards.
+- **Departments and Divisions** — managed on the Users page. Names are not unique: two records may share a name and are told apart by id (a repeated name shows with its "#id" in dropdowns).
 
-## Learning Laravel
+## Stack
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+PHP ^8.3 · Laravel ^13 · MySQL (SQLite for local use) · Blade with a hand-written stylesheet (`public/css/app.css`) · `barryvdh/laravel-dompdf` · `spatie/laravel-activitylog` · Vite.
 
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
-
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
-
-## Agentic Development
-
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
+## Setup (Laragon / Windows)
 
 ```bash
-composer require laravel/boost --dev
-
-php artisan boost:install
+composer install
+copy .env.example .env        # then set DB_*, and MAIL_* if receipts must be emailed
+php artisan key:generate
+php artisan migrate
+php artisan storage:link      # profile photos
+npm install && npm run build  # or `npm run dev` while developing
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+- **Scheduler:** the daily job `ghp:auto-generate-benefit-periods` is registered but only fires if an OS-level trigger runs `php artisan schedule:run` regularly (Windows Task Scheduler on Laragon).
+- **Email:** `MAIL_MAILER=log` (the default) delivers nothing; set real SMTP values for the "Send" receipt button.
+- **Legacy import:** `php artisan ghp:import-legacy` needs the `LEGACY_DB_*` variables (not yet documented in `.env.example`). `php artisan ghp:validate-accrual` is a read-only check of the accrual engine.
+- **Vite hot file:** if `public/hot` exists but `npm run dev` is not running, delete it or assets will fail to load.
 
-## Contributing
+## Tests
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+The suite uses a dedicated MySQL database (`alsc_ghp_db_testing`, see `phpunit.xml`).
 
-## Code of Conduct
+```bash
+php artisan test
+php artisan test --filter=BenefitPeriodRecordTest   # Benefit Period records (task.md §2.35)
+```
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+**Status:** none of the work since 2026-09-24 has been run in the environment that wrote it. Run `php artisan migrate` and the full suite first — see `Progress.md`.
 
-## Security Vulnerabilities
+## Project documents
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+| File | Purpose |
+|---|---|
+| `task.md` | Running implementation log, §2.1–§2.35, plus known issues and technical debt. The primary source of history. |
+| `Progress.md` | Current status, pending work, test status and next steps. |
+| `BRD.md` | Business requirements: objectives, roles, functional requirements, business rules, data model, workflows. |
+| `profile_features.md` | Log of the self-service Profile feature. |
+| `_removed-by-claude/` | Files taken out of the active app (member export, the reverted benefit-period Void feature, the superseded per-reimbursement claim design). Do not restore without checking `task.md`. Safe to delete once no longer needed. |
 
-## License
+## Roles
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+- **Admin** — everything: members, dependents, reimbursements, claims, adjustments, departments, users, imports, data quality, activity log.
+- **Staff** — view the dashboard, members, reports, receipts; edit their own profile.
+
+## Notes
+
+Not implemented yet: "forgot password", login rate limiting, session invalidation on password change, tests for the legacy import command. See `task.md` §3 and `BRD.md` §11–§12.

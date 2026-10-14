@@ -74,7 +74,7 @@
                         <option value="">All departments</option>
                         @foreach ($departments as $department)
                             <option value="{{ $department->id }}" @selected((string) $departmentId === (string) $department->id)>
-                                {{ $department->name }}
+                                {{ $department->option_label }}
                             </option>
                         @endforeach
                     </select>
@@ -86,7 +86,7 @@
                         <option value="">All divisions</option>
                         @foreach ($divisions as $division)
                             <option value="{{ $division->id }}" @selected((string) $divisionId === (string) $division->id)>
-                                {{ $division->name }} ({{ $division->member_type === \App\Models\Member::MEMBER_TYPE_AGENT ? 'Agent' : 'Employee' }})
+                                {{ $division->option_label }} ({{ $division->member_type === \App\Models\Member::MEMBER_TYPE_AGENT ? 'Agent' : 'Employee' }})
                             </option>
                         @endforeach
                     </select>
@@ -209,7 +209,7 @@
                                 <option value="">— None —</option>
                                 @foreach ($divisions as $division)
                                     <option value="{{ $division->id }}" @selected(old('division_id') == $division->id)>
-                                        {{ $division->name }} ({{ $division->member_type === \App\Models\Member::MEMBER_TYPE_AGENT ? 'Agent' : 'Employee' }})
+                                        {{ $division->option_label }} ({{ $division->member_type === \App\Models\Member::MEMBER_TYPE_AGENT ? 'Agent' : 'Employee' }})
                                     </option>
                                 @endforeach
                             </select>
@@ -220,7 +220,7 @@
                                 <option value="">— None —</option>
                                 @foreach ($departments as $department)
                                     <option value="{{ $department->id }}" @selected(old('department_id') == $department->id)>
-                                        {{ $department->name }}
+                                        {{ $department->option_label }}
                                     </option>
                                 @endforeach
                             </select>
